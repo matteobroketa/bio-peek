@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Zero-upload genomic preflight inspector for BAM/BAI, FASTQ and FASTA indexes." />
+  <title>bio-peek — genomic preflight inspector</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="bio-peek home">
+      <span class="brand-mark" aria-hidden="true">bp</span>
+      <span>bio-peek</span>
+    </a>
+    <div class="topbar-right">
+      <span class="privacy-pill">Local-only · zero upload</span>
+      <a href="https://github.com/matteobroketa/bio-peek" class="quiet-link" id="repoLink" target="_blank" rel="noreferrer">GitHub</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="eyebrow">GENOMIC PREFLIGHT</div>
+      <h1>Understand huge sequencing files<br />before you analyze them.</h1>
+      <p class="hero-copy">Drop BAM + BAI, FASTQ, or FAI files. bio-peek reads headers, indexes and small distributed samples directly in your browser—never the full dataset unless you ask it to.</p>
+    </section>
+
+    <section class="workbench" aria-label="File inspector">
+      <div id="dropzone" class="dropzone" role="group" aria-label="Genomic file picker and drop area">
+        <input id="fileInput" class="file-input" type="file" multiple accept=".bam,.bai,.fai,.fastq,.fq,.fastq.gz,.fq.gz" />
+        <div class="drop-icon" aria-hidden="true">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M12 16V4m0 0 4 4m-4-4L8 8M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div>
+          <strong>Drop files here</strong>
+          <span>BAM + BAI · FASTQ / FASTQ.GZ · FAI</span>
+        </div>
+        <label class="button secondary browse-label" id="browseBtn" for="fileInput" role="button" tabindex="0">Browse files</label>
+      </div>
+
+      <div id="selectionPanel" class="selection-panel hidden">
+        <div class="selection-head">
+          <div>
+            <div class="section-kicker">SELECTED</div>
+            <div id="fileSummary" class="selection-summary"></div>
+          </div>
+          <button id="clearBtn" class="icon-button" type="button" title="Clear files" aria-label="Clear files">×</button>
+        </div>
+        <div id="fileChips" class="file-chips"></div>
+        <div class="analysis-controls">
+          <div class="segmented" role="group" aria-label="Sampling depth">
+            <button type="button" data-mode="quick" class="segment active">Quick <small>~40k BAM / 50k FASTQ</small></button>
+            <button type="button" data-mode="deep" class="segment">Deep <small>~150k BAM / 200k FASTQ</small></button>
+          </div>
+          <button id="analyzeBtn" class="button primary" type="button">Inspect files</button>
+        </div>
+      </div>
+
+      <div class="privacy-note">
+        <span class="dot"></span>
+        Files stay on this device. Browser File APIs read only the byte ranges needed for each metric.
+      </div>
+    </section>
+
+    <section id="progressPanel" class="progress-panel hidden" aria-live="polite">
+      <div class="progress-row"><span id="progressMessage">Preparing…</span><span id="progressValue"></span></div>
+      <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+    </section>
+
+    <section id="results" class="results hidden" aria-live="polite"></section>
+
+    <section id="emptyExplainer" class="explainer">
+      <div class="explainer-card">
+        <span class="metric-badge exact">EXACT</span>
+        <h3>Header + index</h3>
+        <p>Reference, sample metadata, sort order, BAM EOF sanity, and idxstats-style counts from BAI metadata.</p>
+      </div>
+      <div class="explainer-card">
+        <span class="metric-badge sampled">SAMPLED</span>
+        <h3>Distributed records</h3>
+        <p>MAPQ, CIGAR, flags, read lengths, barcode/UMI/gene tags and region composition from indexed seek points.</p>
+      </div>
+      <div class="explainer-card">
+        <span class="metric-badge inferred">INFERRED</span>
+        <h3>Dataset shape</h3>
+        <p>Assay type, reference identity, barcode knee and FASTQ library layout—with uncertainty shown explicitly.</p>
+      </div>
+      <button id="demoBtn" class="text-button" type="button">View synthetic scRNA-seq demo →</button>
+    </section>
+  </main>
+
+  <footer>
+    <span>bio-peek</span>
+    <span>Structural metrics are not a substitute for full QC.</span>
+  </footer>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
