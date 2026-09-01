@@ -1,5 +1,5 @@
 import { readOneBgzfBlock, readBgzfWindow, concatUint8 } from './bgzf.js';
-import { collectSamplingOffsets, virtualOffsetParts } from './bai.js';
+import { collectStratifiedSamplingOffsets, collectSamplingOffsets, validateBaiAgainstBam, virtualOffsetParts } from './bai.js';
 import { estimateBarcodeKnee, inferReferenceBuild, medianFromHistogram, topEntries } from './stats.js';
 
 const td = new TextDecoder();
@@ -8,6 +8,10 @@ const BAM_EOF = new Uint8Array([
   0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43,
   0x02, 0x00, 0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
+const MAX_UNIQUE_KEYS = 250_000;
+const MAX_BARCODES = 50_000;
+const MAX_BARCODE_SET_SIZE = 512;
+const MAX_GENE_KEYS = 100_000;
 
 function i32(view, o) { return view.getInt32(o, true); }
 function u32(view, o) { return view.getUint32(o, true); }
@@ -51,22 +55,25 @@ function tryParseBamHeader(bytes) {
     p += 4;
     if (lName <= 0 || lName > 1_000_000) throw new Error('Invalid BAM reference name length');
     if (p + lName + 4 > bytes.length) return null;
+    if (bytes[p + lName - 1] !== 0) throw new Error(`BAM reference name ${r} is not NUL terminated`);
     const name = td.decode(bytes.subarray(p, p + lName - 1));
     p += lName;
     const length = i32(view, p);
     p += 4;
+    if (!name || length <= 0) throw new Error(`Invalid BAM reference ${r}`);
+    if (references.some((ref) => ref.name === name)) throw new Error(`Duplicate BAM reference name ${name}`);
     references.push({ name, length });
   }
   const fields = parseHeaderLines(headerText);
   return { headerText, fields, references, uncompressedHeaderBytes: p };
 }
 
-export async function readBamHeader(file) {
+export async function readBamHeader(file, { signal, onBytes = () => {} } = {}) {
   const parts = [];
   let compressedOffset = 0;
   let total = 0;
   for (let i = 0; i < 256 && compressedOffset < file.size; i++) {
-    const block = await readOneBgzfBlock(file, compressedOffset);
+    const block = await readOneBgzfBlock(file, compressedOffset, { signal, onBytes });
     if (!block) break;
     parts.push(block.data);
     total += block.data.length;
@@ -86,9 +93,11 @@ export async function readBamHeader(file) {
   throw new Error('Could not read a complete BAM header');
 }
 
-export async function checkBamEof(file) {
+export async function checkBamEof(file, { signal, onBytes = () => {} } = {}) {
+  if (signal?.aborted) throw new DOMException('Operation cancelled', 'AbortError');
   if (file.size < BAM_EOF.length) return false;
   const tail = new Uint8Array(await file.slice(file.size - BAM_EOF.length).arrayBuffer());
+  onBytes(BAM_EOF.length);
   return BAM_EOF.every((v, i) => tail[i] === v);
 }
 
@@ -148,10 +157,29 @@ function parseWantedAux(view, bytes, p, end) {
   return out;
 }
 
+function validateAuxFields(view, bytes, p, end) {
+  const validTypes = new Set(['A', 'c', 'C', 's', 'S', 'i', 'I', 'f', 'd', 'Z', 'H', 'B']);
+  while (p < end) {
+    if (p + 3 > end) throw new Error('truncated auxiliary tag header');
+    const tag1 = bytes[p], tag2 = bytes[p + 1];
+    const type = String.fromCharCode(bytes[p + 2]);
+    if (tag1 < 33 || tag2 < 33 || !validTypes.has(type)) throw new Error('invalid auxiliary tag');
+    p += 3;
+    const next = skipAuxValue(view, bytes, p, end, type);
+    if (next > end) throw new Error(`truncated auxiliary value for ${String.fromCharCode(tag1, tag2)}`);
+    if (type === 'B') {
+      const subtype = String.fromCharCode(bytes[p]);
+      if (!'cCsSiIf'.includes(subtype)) throw new Error(`invalid B-array subtype ${subtype}`);
+    }
+    p = next;
+  }
+}
+
 function createAccumulator() {
   return {
     records: 0,
     uniqueKeys: new Set(),
+    deduplicationCapped: false,
     mapq: Array(256).fill(0),
     readLengths: new Map(),
     flags: { mapped: 0, unmapped: 0, paired: 0, properPair: 0, duplicate: 0, secondary: 0, supplementary: 0 },
@@ -165,15 +193,27 @@ function createAccumulator() {
     readGroups: new Map(),
     multimappedTag: 0,
     sampleByReference: new Map(),
+    sampledRegions: new Set(),
+    alignmentClasses: { primary: 0, secondary: 0, supplementary: 0, unmapped: 0 },
+    barcodeSketches: new Map(),
+    barcodeMapCapped: false,
+    geneMapCapped: false,
   };
 }
 
-function bump(map, key, n = 1) { map.set(key, (map.get(key) || 0) + n); }
+function bump(map, key, n = 1, maxKeys = Infinity) {
+  if (!map.has(key) && map.size >= maxKeys) return false;
+  map.set(key, (map.get(key) || 0) + n);
+  return true;
+}
 
 function consumeRecord(acc, rec) {
   const key = `${rec.refId}:${rec.pos}:${rec.readName}:${rec.flag}`;
-  if (acc.uniqueKeys.has(key)) return false;
-  acc.uniqueKeys.add(key);
+  if (!acc.deduplicationCapped) {
+    if (acc.uniqueKeys.has(key)) return false;
+    if (acc.uniqueKeys.size < MAX_UNIQUE_KEYS) acc.uniqueKeys.add(key);
+    else acc.deduplicationCapped = true;
+  }
   acc.records++;
   acc.mapq[rec.mapq]++;
   bump(acc.readLengths, rec.lSeq);
@@ -185,18 +225,38 @@ function consumeRecord(acc, rec) {
   if (rec.flag & 0x800) acc.flags.supplementary++;
   if (rec.spliced) acc.spliced++;
   if (rec.refId >= 0) bump(acc.sampleByReference, rec.refId);
+  if (rec.region) acc.sampledRegions.add(rec.region);
+  if (rec.flag & 0x4) acc.alignmentClasses.unmapped++;
+  else if (rec.flag & 0x100) acc.alignmentClasses.secondary++;
+  else if (rec.flag & 0x800) acc.alignmentClasses.supplementary++;
+  else acc.alignmentClasses.primary++;
 
   for (const tag of Object.keys(rec.aux)) bump(acc.tags, tag);
   if (rec.aux.RE != null) bump(acc.regions, String(rec.aux.RE));
-  if (rec.aux.CB) bump(acc.barcodes, String(rec.aux.CB));
+  if (rec.aux.CB) {
+    const barcode = String(rec.aux.CB);
+    if (!bump(acc.barcodes, barcode, 1, MAX_BARCODES)) acc.barcodeMapCapped = true;
+    let sketch = acc.barcodeSketches.get(barcode);
+    if (!sketch && acc.barcodeSketches.size < MAX_BARCODES) {
+      sketch = { reads: 0, umis: new Set(), genes: new Set(), mitochondrial: 0 };
+      acc.barcodeSketches.set(barcode, sketch);
+    }
+    if (sketch) {
+      sketch.reads++;
+      if (rec.aux.UB && sketch.umis.size < MAX_BARCODE_SET_SIZE) sketch.umis.add(String(rec.aux.UB));
+      const gene = rec.aux.GX || rec.aux.GN;
+      if (gene && sketch.genes.size < MAX_BARCODE_SET_SIZE) sketch.genes.add(String(gene).split(';')[0]);
+      if (rec.refName && /^(?:chrM|MT|M)$/i.test(rec.refName)) sketch.mitochondrial++;
+    }
+  }
   if (rec.aux.RG) bump(acc.readGroups, String(rec.aux.RG));
   if (rec.aux.MM === 1 || rec.aux.mm === 1 || Number(rec.aux.NH) > 1) acc.multimappedTag++;
 
   const geneToken = rec.aux.GN || rec.aux.GX;
   if (geneToken) {
     for (const gene of String(geneToken).split(';').filter(Boolean).slice(0, 8)) {
-      bump(acc.genes, gene);
-      acc.geneIds.add(gene);
+      if (!bump(acc.genes, gene, 1, MAX_GENE_KEYS)) acc.geneMapCapped = true;
+      if (acc.geneIds.size < MAX_GENE_KEYS) acc.geneIds.add(gene);
     }
   }
   if (rec.aux.CB && rec.aux.UB) {
@@ -206,13 +266,16 @@ function consumeRecord(acc, rec) {
   return true;
 }
 
-function parseRecords(bytes, start, maxRecords, acc) {
+function parseRecords(bytes, start, maxRecords, acc, { strict = false, referenceCount = null, referenceNames = null, region = null } = {}) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let p = start;
   let parsed = 0;
   while (p + 4 <= bytes.length && parsed < maxRecords) {
     const blockSize = i32(view, p);
-    if (blockSize < 32 || blockSize > 16 * 1024 * 1024 || p + 4 + blockSize > bytes.length) break;
+    if (blockSize < 32 || blockSize > 16 * 1024 * 1024 || p + 4 + blockSize > bytes.length) {
+      if (strict) throw new Error(`invalid or truncated BAM record block at byte ${p}`);
+      break;
+    }
     const core = p + 4;
     const end = core + blockSize;
     const refId = i32(view, core);
@@ -224,14 +287,37 @@ function parseRecords(bytes, start, maxRecords, acc) {
     const mapq = (binMqNl >>> 8) & 0xff;
     const nCigar = flagNc & 0xffff;
     const flag = flagNc >>> 16;
-    if (lReadName < 1 || lSeq < 0) break;
+    if (lReadName < 1 || lSeq < 0 || lReadName > blockSize || lSeq > 1_000_000) {
+      if (strict) throw new Error(`invalid BAM record lengths at byte ${p}`);
+      break;
+    }
 
     const readNameStart = core + 32;
     const cigarStart = readNameStart + lReadName;
     const seqStart = cigarStart + nCigar * 4;
     const qualStart = seqStart + Math.ceil(lSeq / 2);
     const auxStart = qualStart + lSeq;
-    if (auxStart > end) break;
+    if (auxStart > end) {
+      if (strict) throw new Error(`BAM record payload exceeds block at byte ${p}`);
+      break;
+    }
+
+    if (strict) {
+      if (bytes[readNameStart + lReadName - 1] !== 0) throw new Error(`BAM read name is not NUL terminated at byte ${p}`);
+      let queryLength = 0;
+      let referenceLength = 0;
+      for (let c = 0; c < nCigar; c++) {
+        const cigar = u32(view, cigarStart + c * 4);
+        const length = cigar >>> 4;
+        const op = cigar & 0xf;
+        if (!length || op > 8) throw new Error(`invalid BAM CIGAR operation at byte ${p}`);
+        if ([0, 1, 4, 7, 8].includes(op)) queryLength += length;
+        if ([0, 2, 3, 7, 8].includes(op)) referenceLength += length;
+      }
+      if (nCigar && queryLength !== lSeq) throw new Error(`BAM CIGAR query length ${queryLength} does not match sequence length ${lSeq}`);
+      if (refId < -1 || refId >= 1_000_000 || (referenceCount != null && refId >= referenceCount) || pos < -1) throw new Error(`invalid BAM reference/position at byte ${p}`);
+      validateAuxFields(view, bytes, auxStart, end);
+    }
 
     const readName = td.decode(bytes.subarray(readNameStart, readNameStart + Math.max(0, lReadName - 1)));
     let spliced = false;
@@ -240,14 +326,41 @@ function parseRecords(bytes, start, maxRecords, acc) {
       if (op === 3) { spliced = true; break; }
     }
     const aux = parseWantedAux(view, bytes, auxStart, end);
-    consumeRecord(acc, { refId, pos, readName, mapq, flag, lSeq, spliced, aux });
+    consumeRecord(acc, { refId, refName: referenceNames?.[refId]?.name, pos, readName, mapq, flag, lSeq, spliced, aux, region });
     parsed++;
     p = end;
   }
   return parsed;
 }
 
-function finalizeAccumulator(acc, header) {
+function medianArray(values) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const middle = (sorted.length - 1) / 2;
+  return sorted[Math.floor(middle)] * (1 - (middle % 1)) + sorted[Math.ceil(middle)] * (middle % 1);
+}
+
+function proportionEstimate(count, total) {
+  const n = Number(total);
+  const p = n ? Number(count) / n : null;
+  if (p == null) return { estimate: null, margin: null, n: 0 };
+  const margin = 1.96 * Math.sqrt(Math.max(0, p * (1 - p)) / Math.max(1, n));
+  return { estimate: p, margin, n };
+}
+
+function snapshotAccumulator(acc) {
+  const total = acc.records;
+  return {
+    records: total,
+    mapqMedian: medianFromHistogram(acc.mapq),
+    readLengthMedian: medianFromHistogram(acc.readLengths),
+    exonicFraction: total ? (acc.regions.get('E') || 0) / total : null,
+    barcodeRate: total ? acc.barcodes.size / total : null,
+  };
+}
+
+function finalizeAccumulator(acc, header, { convergence = [], strata = [], converged = false } = {}) {
+  const total = acc.records;
   const knee = estimateBarcodeKnee(acc.barcodes);
   const tagPresence = Object.fromEntries([...acc.tags].map(([k, v]) => [k, v / Math.max(1, acc.records)]));
   const region = Object.fromEntries([...acc.regions]);
@@ -264,6 +377,33 @@ function finalizeAccumulator(acc, header) {
   }
 
   const barcodeRank = [...acc.barcodes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5000).map(([barcode, count], i) => ({ rank: i + 1, barcode, count }));
+  const barcodeEntries = [...acc.barcodeSketches.entries()].sort((a, b) => b[1].reads - a[1].reads);
+  const barcodeMetrics = barcodeEntries.map(([barcode, sketch], i) => ({
+    rank: i + 1, barcode, reads: sketch.reads, umis: sketch.umis.size, genes: sketch.genes.size,
+    mitochondrialFraction: sketch.reads ? sketch.mitochondrial / sketch.reads : null,
+  }));
+  const cellCount = knee?.estimatedCells || 0;
+  const cellBarcodes = barcodeMetrics.slice(0, cellCount);
+  const tailBarcodes = barcodeMetrics.slice(cellCount);
+  const tailReads = tailBarcodes.reduce((sum, item) => sum + item.reads, 0);
+  const barcodeShape = {
+    retainedBarcodes: barcodeMetrics.length,
+    mapCapped: acc.barcodeMapCapped || acc.barcodeSketches.size >= MAX_BARCODES,
+    readsPerBarcodeMedian: medianArray(barcodeMetrics.map((x) => x.reads)),
+    umisPerBarcodeMedian: medianArray(barcodeMetrics.map((x) => x.umis)),
+    genesPerBarcodeMedian: medianArray(barcodeMetrics.map((x) => x.genes)),
+    cellAssociatedReadsPerBarcodeMedian: medianArray(cellBarcodes.map((x) => x.reads)),
+    cellAssociatedUmisPerBarcodeMedian: medianArray(cellBarcodes.map((x) => x.umis)),
+    cellAssociatedGenesPerBarcodeMedian: medianArray(cellBarcodes.map((x) => x.genes)),
+    mitochondrialFractionMedian: medianArray(barcodeMetrics.map((x) => x.mitochondrialFraction)),
+    ambientTailFraction: totalBarcodedReads(acc.barcodes) ? tailReads / totalBarcodedReads(acc.barcodes) : null,
+    sketches: barcodeMetrics.slice(0, 5000),
+  };
+  const uncertainty = {
+    regions: Object.fromEntries([...acc.regions].map(([key, count]) => [key, proportionEstimate(count, total)])),
+    alignmentClasses: Object.fromEntries(Object.entries(acc.alignmentClasses).map(([key, count]) => [key, proportionEstimate(count, total)])),
+    flags: Object.fromEntries(Object.entries(acc.flags).map(([key, count]) => [key, proportionEstimate(count, total)])),
+  };
   return {
     records: acc.records,
     mapqMedian: medianFromHistogram(acc.mapq),
@@ -274,12 +414,27 @@ function finalizeAccumulator(acc, header) {
     spliced: acc.spliced,
     tagPresence,
     regions: region,
+    uncertainty,
+    sampledRegions: [...acc.sampledRegions],
+    sampledRegionCount: acc.sampledRegions.size,
+    alignmentClasses: acc.alignmentClasses,
     uniqueBarcodesObserved: acc.barcodes.size,
     uniqueMoleculesObserved: acc.uniqueUmis.size,
     uniqueGenesObserved: acc.geneIds.size,
     topGenes: topEntries(acc.genes, 15),
     barcodeRank,
     knee,
+    barcodeShape,
+    convergence,
+    sampling: {
+      strategy: 'reference- and index-region-stratified BAI sample',
+      strata: strata.length,
+      sampledStrata: [...acc.sampledRegions],
+      referencesRepresented: new Set([...acc.sampleByReference.keys()]).size,
+      referenceCount: header.references.length,
+      deduplicationCapped: acc.deduplicationCapped,
+      converged,
+    },
     multimappedTag: acc.multimappedTag,
     assay,
     readGroups: topEntries(acc.readGroups, 20),
@@ -290,14 +445,42 @@ function finalizeAccumulator(acc, header) {
 export async function sampleBam(file, bai, header, {
   targetRecords = 40_000,
   samplePoints = 24,
+  progressive = false,
+  batchSize = 25_000,
+  minBatches = 2,
+  stabilityBatches = 2,
+  signal,
   onProgress = () => {},
 } = {}) {
-  const offsets = collectSamplingOffsets(bai, samplePoints);
+  const offsets = collectStratifiedSamplingOffsets(bai, samplePoints);
   if (!offsets.length) throw new Error('BAI contains no usable seek offsets for sampling');
   const acc = createAccumulator();
   const perPoint = Math.ceil(targetRecords / offsets.length);
+  const convergence = [];
+  let converged = false;
+  let nextBatch = Math.max(1, batchSize);
+  let bytesRead = 0;
+
+  const isStable = (a, b) => {
+    if (!a || !b) return false;
+    const fractionStable = (x, y) => x == null || y == null || Math.abs(x - y) <= 0.01;
+    const medianStable = (x, y, tolerance) => x == null || y == null || Math.abs(x - y) <= tolerance;
+    return fractionStable(a.exonicFraction, b.exonicFraction) &&
+      fractionStable(a.barcodeRate, b.barcodeRate) &&
+      medianStable(a.mapqMedian, b.mapqMedian, 2) &&
+      medianStable(a.readLengthMedian, b.readLengthMedian, 2);
+  };
+
+  const maybeRecordBatch = () => {
+    while (acc.records >= nextBatch || (!convergence.length && acc.records > 0 && !progressive)) {
+      convergence.push(snapshotAccumulator(acc));
+      nextBatch += Math.max(1, batchSize);
+      if (!progressive) break;
+    }
+  };
 
   for (let i = 0; i < offsets.length && acc.records < targetRecords; i++) {
+    if (signal?.aborted) throw new DOMException('Sampling cancelled', 'AbortError');
     const { virtualOffset } = offsets[i];
     const p = virtualOffsetParts(virtualOffset);
     try {
@@ -305,14 +488,57 @@ export async function sampleBam(file, bai, header, {
         maxCompressedBytes: 1.5 * 1024 * 1024,
         maxBlocks: 48,
         maxUncompressedBytes: 3 * 1024 * 1024,
+        signal,
+        onBytes: (n) => { bytesRead += n; },
       });
-      parseRecords(window.data, p.uncompressed, Math.min(perPoint * 2, targetRecords - acc.records + perPoint), acc);
+      parseRecords(window.data, p.uncompressed, Math.min(perPoint * 2, targetRecords - acc.records + perPoint), acc, { region: offsets[i].region });
     } catch (err) {
       // A bad/overlapping index seek should not abort all other distributed samples.
+      if (err?.name === 'AbortError') throw err;
       console.warn('BAM sample point failed', p, err);
     }
-    onProgress({ completed: i + 1, total: offsets.length, records: acc.records });
+    maybeRecordBatch();
+    const stable = progressive && convergence.length >= minBatches + stabilityBatches && convergence.slice(-stabilityBatches).every((x, j, arr) => j === 0 || isStable(arr[j - 1], x));
+    onProgress({ completed: i + 1, total: offsets.length, records: acc.records, bytesRead, convergence: convergence.at(-1), stable });
+    if (stable) { converged = true; break; }
   }
   if (!acc.records) throw new Error('Could not decode BAM records from BAI seek points');
-  return finalizeAccumulator(acc, header);
+  if (!convergence.length || convergence.at(-1).records !== acc.records) convergence.push(snapshotAccumulator(acc));
+  return finalizeAccumulator(acc, header, { convergence, strata: offsets, converged });
+}
+
+function totalBarcodedReads(barcodes) {
+  let total = 0;
+  for (const count of barcodes.values()) total += count;
+  return total;
+}
+
+/**
+ * Validate index/header compatibility and probe indexed BGZF/record boundaries.
+ * The complete BAI structure is checked synchronously; probes then exercise
+ * actual BAM bytes at representative seek points, catching wrong indexes,
+ * truncated BGZF members and corrupt record payloads before sampling.
+ */
+export async function validateBamIndex(file, bai, header, { probePoints = 64, signal, onBytes = () => {} } = {}) {
+  if (signal?.aborted) throw new DOMException('Validation cancelled', 'AbortError');
+  validateBaiAgainstBam(bai, header, file.size);
+  const offsets = collectSamplingOffsets(bai, probePoints);
+  const probeAccumulator = createAccumulator();
+  for (const { virtualOffset } of offsets) {
+    const p = virtualOffsetParts(virtualOffset);
+    const window = await readBgzfWindow(file, p.compressed, {
+      maxCompressedBytes: 512 * 1024,
+      maxBlocks: 16,
+      maxUncompressedBytes: 1 * 1024 * 1024,
+      signal,
+      onBytes,
+    });
+    const block = window.blocks[0];
+    if (!block || p.uncompressed >= block.data.length) {
+      throw new Error(`BAI seek offset ${p.compressed}:${p.uncompressed} is outside its BGZF block`);
+    }
+    const parsed = parseRecords(window.data, p.uncompressed, 1, probeAccumulator, { strict: true, referenceCount: header.references.length, referenceNames: header.references });
+    if (!parsed) throw new Error(`BAI seek offset ${p.compressed}:${p.uncompressed} does not point to a BAM record`);
+  }
+  return { valid: true, probes: offsets.length };
 }

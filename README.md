@@ -67,9 +67,13 @@ This distinction is intentional. bio-peek does not present a 40,000-record estim
 
 The app is entirely static. Files are passed to a Web Worker as browser `File` handles. Data is read with `Blob.slice()` and streams; it is not uploaded.
 
-For BAMs, BGZF block sizes are parsed from the `BC` extra field and individual gzip members are decompressed locally. BAI virtual offsets provide actual compressed-block and in-block offsets. The BAI is used only for seeking/count metadata—not as a proxy coverage histogram.
+For BAMs, BGZF block sizes are parsed from the `BC` extra field and individual gzip members are decompressed locally. BAI virtual offsets provide actual compressed-block and in-block offsets. Before indexed metrics are shown, the BAI is checked against the BAM reference count and file bounds, representative BGZF members are decompressed, and representative BAM record boundaries/CIGAR/auxiliary fields are validated. The BAI is used only for seeking/count metadata—not as a proxy coverage histogram.
 
-For gzip FASTQ, `DecompressionStream` is used and the stream is cancelled once the target number of reads has been sampled.
+For uncompressed FASTQ, bounded byte ranges are sampled across the file. Ordinary gzip FASTQ is explicitly reported as a prefix stream sample because gzip has no random-access index. Four-line structure, printable quality bytes, base alphabet and read-number headers are validated and reported.
+
+Deep BAM mode samples progressively in batches. It records checkpoint metrics and stops early only after the key medians and proportions stabilize; otherwise the result is labeled as still moving at the sample limit. Sampled proportions include a 95% binomial uncertainty margin and report represented index regions/reference strata.
+
+The BAM sampler maintains bounded per-barcode sketches for reads, UMIs, genes and mitochondrial observations. These are sample-derived data-shape metrics, not Cell Ranger cell calls.
 
 ## Run locally
 
@@ -92,6 +96,10 @@ The repository is directly deployable from its root with GitHub Pages. There are
 ```bash
 npm test
 npm run check
+# Optional browser gate (requires Playwright browsers):
+npm install
+npx playwright install
+npm run test:browser
 ```
 
 Tests include synthetic spec-conformant BAI data and a synthetic BAM encoded as a real BGZF member. The BAM fixture verifies header decoding, EOF detection, BAI virtual-offset sampling, BAM record parsing and scRNA auxiliary tags.
@@ -100,11 +108,13 @@ Tests include synthetic spec-conformant BAI data and a synthetic BAM encoded as 
 
 - BAI metadata counts are optional. When pseudo-bin `37450` is absent, exact mapped/unmapped counts are not fabricated.
 - Distributed BAM sampling is not an exact whole-file statistic. Coordinate sorting, unusual index layouts or highly nonuniform record sizes can influence the sample.
+- Selected BAM, BAI and FASTQ files are resolved into independent dataset groups. Files with unrelated or ambiguous names are surfaced as unassigned instead of being silently combined.
 - The barcode-knee estimate is exploratory. Exact cell calling requires the appropriate single-cell pipeline and full molecule/count matrix context.
 - The FASTQ parser targets conventional four-line sequencing FASTQ records, which covers standard Illumina/10x exports. Exotic wrapped FASTQ is intentionally not supported in this first release.
 - `quickcheck`-style EOF/header checks cannot detect corruption in the middle of a BAM.
 - CRAM/CRAI is not implemented. CRAI should not be treated as a BAI-equivalent source of idxstats counts.
 - Browser `DecompressionStream('gzip')` is required for BAM/BGZF and `.fastq.gz` inspection.
+- Deep-mode convergence is a bounded stability diagnostic, not a proof that a sample is representative of every biological subpopulation.
 
 ## Source specifications
 

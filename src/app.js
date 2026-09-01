@@ -14,6 +14,8 @@ const clearBtn = $('#clearBtn');
 const progressPanel = $('#progressPanel');
 const progressMessage = $('#progressMessage');
 const progressValue = $('#progressValue');
+const progressBytes = $('#progressBytes');
+const cancelBtn = $('#cancelBtn');
 const progressBar = $('#progressBar');
 const resultsEl = $('#results');
 const explainer = $('#emptyExplainer');
@@ -45,7 +47,8 @@ function clearAll() {
   resultsEl.classList.add('hidden'); resultsEl.innerHTML = '';
   explainer.classList.remove('hidden'); progressPanel.classList.add('hidden');
   lastResult = null;
-  if (worker) { worker.terminate(); worker = null; }
+  if (worker) { worker.postMessage({ type: 'cancel' }); worker.terminate(); worker = null; }
+  cancelBtn.disabled = false;
 }
 
 function openFilePicker() {
@@ -60,12 +63,20 @@ function openFilePicker() {
   fileInput.click();
 }
 
+// The label handles pointer activation natively. For keyboard users, prevent
+// the label's browser-specific default and invoke the same picker path once.
 browseBtn.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openFilePicker(); }
 });
 
 dropzone.addEventListener('click', (e) => {
   if (e.target.closest('#browseBtn')) return;
+  openFilePicker();
+});
+
+dropzone.addEventListener('keydown', (e) => {
+  if (e.target !== dropzone || !['Enter', ' '].includes(e.key)) return;
+  e.preventDefault();
   openFilePicker();
 });
 
@@ -124,6 +135,7 @@ document.querySelectorAll('.segment').forEach((btn) => btn.addEventListener('cli
 function updateProgress(data) {
   progressPanel.classList.remove('hidden');
   progressMessage.textContent = data.message || 'Inspecting…';
+  if (data.bytesRead != null) progressBytes.textContent = data.totalBytes ? `${formatBytes(data.bytesRead)} / ${formatBytes(data.totalBytes)}` : `${formatBytes(data.bytesRead)} read`;
   if (data.total && data.current != null) {
     const p = Math.max(0, Math.min(100, data.current / data.total * 100));
     progressBar.style.width = `${Math.max(4, p)}%`;
@@ -133,12 +145,20 @@ function updateProgress(data) {
   }
 }
 
+cancelBtn.addEventListener('click', () => {
+  if (!worker) return;
+  cancelBtn.disabled = true;
+  progressMessage.textContent = 'Canceling inspection…';
+  worker.postMessage({ type: 'cancel' });
+});
+
 analyzeBtn.addEventListener('click', () => {
   const files = [...selected.values()];
   if (!files.length) return;
   if (worker) worker.terminate();
   worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
   analyzeBtn.disabled = true; analyzeBtn.textContent = 'Inspecting…';
+  cancelBtn.disabled = false;
   resultsEl.classList.add('hidden'); explainer.classList.add('hidden');
   updateProgress({ message: 'Preparing local file readers…' });
   worker.onmessage = (event) => {
@@ -151,19 +171,29 @@ analyzeBtn.addEventListener('click', () => {
       bindExport();
       setTimeout(() => progressPanel.classList.add('hidden'), 650);
       analyzeBtn.disabled = false; analyzeBtn.textContent = 'Inspect files';
+      cancelBtn.disabled = false;
       resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
       worker.terminate(); worker = null;
+    }
+    if (data.type === 'cancelled') {
+      progressMessage.textContent = 'Inspection canceled';
+      progressValue.textContent = '';
+      cancelBtn.disabled = false;
+      analyzeBtn.disabled = false; analyzeBtn.textContent = 'Inspect files';
+      worker?.terminate(); worker = null;
     }
     if (data.type === 'error') {
       progressMessage.textContent = `Inspection failed: ${data.message}`; progressValue.textContent = '';
       progressBar.style.width = '100%'; progressBar.style.background = '#a33b33';
       analyzeBtn.disabled = false; analyzeBtn.textContent = 'Inspect files';
+      cancelBtn.disabled = false;
       worker?.terminate(); worker = null;
     }
   };
   worker.onerror = (e) => {
     progressMessage.textContent = `Worker error: ${e.message}`;
     analyzeBtn.disabled = false; analyzeBtn.textContent = 'Inspect files';
+    cancelBtn.disabled = false;
   };
   worker.postMessage({ type: 'analyze', files, mode });
 });

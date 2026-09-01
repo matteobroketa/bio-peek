@@ -1,0 +1,27 @@
+{
+  "name": "pbmc_1k_v3",
+  "source": {
+    "url": "https://www.10xgenomics.com/datasets/1-k-pbm-cs-from-a-healthy-donor-v-3-chemistry-3-standard-3-0-0",
+    "cellRangerVersion": "3.0.0"
+  },
+  "published": {
+    "cellsDetected": 1222,
+    "readsPerCellApprox": 54000,
+    "r1Length": 28,
+    "r2Length": 91,
+    "i7Length": 8,
+    "expectCells": 1000
+  },
+  "tolerances": {
+    "fastqMedianLengthBp": 0,
+    "bamMappedFraction": 0.01,
+    "sampledRegionFraction": 0.05,
+    "estimatedCellsRelative": 0.25
+  },
+  "commands": [
+    "samtools idxstats pbmc_1k_v3_possorted_genome_bam.bam",
+    "seqkit stats -T pbmc_1k_v3_*_R{1,2}_*.fastq.gz",
+    "fastp --in1 R1.fastq.gz --in2 R2.fastq.gz --json fastp.json",
+    "cellranger count --expect-cells=1000"
+  ]
+}

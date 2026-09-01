@@ -63,6 +63,8 @@ h1 { margin: 12px 0 20px; font-size: clamp(42px, 6vw, 70px); line-height: .99; l
 .dot { width: 7px; height: 7px; border-radius: 50%; background: #4ba67c; box-shadow: 0 0 0 4px #eaf5ef; }
 .progress-panel { margin: 18px 0; border: 1px solid var(--line); background: white; border-radius: 13px; padding: 14px 16px; }
 .progress-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); gap: 12px; }
+.progress-row > span:last-child { display: flex; align-items: center; gap: 8px; }
+.progress-row .text-button { color: var(--danger); font-size: 12px; }
 .progress-track { height: 5px; background: #edf0ed; border-radius: 999px; margin-top: 10px; overflow: hidden; }
 .progress-bar { height: 100%; width: 8%; background: var(--accent); border-radius: inherit; transition: width .2s ease; }
 .results { margin-top: 36px; padding-bottom: 30px; }

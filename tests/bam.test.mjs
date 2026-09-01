@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
-import { readBamHeader, checkBamEof, sampleBam } from '../src/bam.js';
+import { readBamHeader, checkBamEof, sampleBam, validateBamIndex } from '../src/bam.js';
 
 const EOF_BLOCK = Buffer.from([0x1f,0x8b,0x08,0x04,0,0,0,0,0,0xff,0x06,0,0x42,0x43,0x02,0,0x1b,0,0x03,0,0,0,0,0,0,0,0,0]);
 
@@ -71,4 +71,14 @@ test('samples a BAM record from a BAI virtual seek point and parses scRNA tags',
   assert.equal(s.uniqueMoleculesObserved, 1);
   assert.equal(s.regions.E, 1);
   assert.equal(s.assay.label, 'Single-cell RNA sequencing');
+  assert.equal(s.sampling.strategy, 'reference- and index-region-stratified BAI sample');
+  assert.ok(s.uncertainty.regions.E.margin >= 0);
+  assert.equal(s.barcodeShape.readsPerBarcodeMedian, 1);
+});
+
+test('rejects an index whose virtual offset is outside the BAM', async () => {
+  const { file } = makeBam();
+  const h = await readBamHeader(file);
+  const bad = { references: [{ bins: [{ bin: 0, chunks: [{ beg: 999n << 16n, end: 1000n << 16n }] }], linear: [], metadata: null }], noCoordinate: null };
+  await assert.rejects(() => validateBamIndex(file, bad, h), /beyond the BAM/);
 });

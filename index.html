@@ -27,7 +27,7 @@
     </section>
 
     <section class="workbench" aria-label="File inspector">
-      <div id="dropzone" class="dropzone" role="group" aria-label="Genomic file picker and drop area">
+      <div id="dropzone" class="dropzone" role="group" tabindex="0" aria-label="Genomic file picker and drop area">
         <input id="fileInput" class="file-input" type="file" multiple accept=".bam,.bai,.fai,.fastq,.fq,.fastq.gz,.fq.gz" />
         <div class="drop-icon" aria-hidden="true">
           <svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M12 16V4m0 0 4 4m-4-4L8 8M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -64,7 +64,7 @@
     </section>
 
     <section id="progressPanel" class="progress-panel hidden" aria-live="polite">
-      <div class="progress-row"><span id="progressMessage">Preparing…</span><span id="progressValue"></span></div>
+      <div class="progress-row"><span id="progressMessage">Preparing…</span><span><span id="progressBytes"></span> <span id="progressValue"></span> <button id="cancelBtn" class="text-button" type="button">Cancel</button></span></div>
       <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
     </section>
 

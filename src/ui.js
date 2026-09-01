@@ -11,11 +11,11 @@ function metric(label, value, type, sub = '') {
 }
 function confidence(c) { return `<span class="confidence">${esc(String(c || 'low').toUpperCase())} CONFIDENCE · INFERRED</span>`; }
 
-function barList(entries, total, labelMap = {}) {
+function barList(entries, total, labelMap = {}, uncertainty = {}) {
   const rows = entries.filter(([, v]) => v > 0);
   if (!rows.length) return '<div class="metric-sub">No observations in sample.</div>';
   const max = Math.max(...rows.map(([, v]) => v));
-  return `<div class="bar-list">${rows.map(([k, v]) => `<div class="bar-row"><label title="${esc(labelMap[k] || k)}">${esc(labelMap[k] || k)}</label><div class="bar-bg"><div class="bar-fill" style="width:${Math.max(1, v / max * 100).toFixed(2)}%"></div></div><output>${total ? pct(v / total) : num(v)}</output></div>`).join('')}</div>`;
+  return `<div class="bar-list">${rows.map(([k, v]) => { const u = uncertainty[k] || uncertainty[k.toLowerCase()]; const value = total ? `${pct(v / total)}${u?.margin != null ? ` ±${pct(u.margin)}` : ''}` : num(v); return `<div class="bar-row"><label title="${esc(labelMap[k] || k)}">${esc(labelMap[k] || k)}</label><div class="bar-bg"><div class="bar-fill" style="width:${Math.max(1, v / max * 100).toFixed(2)}%"></div></div><output>${esc(value)}</output></div>`; }).join('')}</div>`;
 }
 
 function table(headers, rows) {
@@ -48,7 +48,7 @@ function bamPanel(bam, index) {
 
   return `<article class="panel">
     <div class="panel-head">
-      <div class="panel-title"><span class="file-type">BAM</span><div><h3>${esc(bam.name)}</h3><p>${formatBytes(bam.size)}${idx ? ` · ${esc(idx.name)}` : ' · no BAI supplied'}</p></div></div>
+      <div class="panel-title"><span class="file-type">BAM</span><div>${bam.datasetLabel ? `<div class="section-kicker">${esc(bam.datasetLabel)}</div>` : ''}<h3>${esc(bam.name)}</h3><p>${formatBytes(bam.size)}${idx ? ` · ${esc(idx.name)}` : ' · no BAI supplied'}</p></div></div>
       <span class="status ${bam.eof ? 'good' : 'warn'}">${bam.eof ? 'EOF marker present' : 'EOF marker missing'}</span>
     </div>
     <div class="panel-body">
@@ -58,7 +58,7 @@ function bamPanel(bam, index) {
         ${metric('Mapped fraction', mappedFraction == null ? '—' : pct(mappedFraction), 'exact', total ? `${num(total)} total indexed records` : 'requires BAI metadata counts')}
         ${metric('Mitochondrial fraction', mitoFraction == null ? '—' : pct(mitoFraction), 'exact', mito ? `${mito.name} mapped / all mapped` : 'mitochondrial contig not recognized')}
         ${metric('Reference sequences', num(h.references.length), 'exact', h.referenceBuild?.naming || '')}
-        ${metric('Median MAPQ', s ? num(s.mapqMedian) : '—', 'sampled', s ? `${num(s.records)} distributed records` : 'sample unavailable')}
+        ${metric('Median MAPQ', s ? num(s.mapqMedian) : '—', 'sampled', s ? `${num(s.records)} records · ${s.sampling?.strategy || 'stratified sample'}` : 'sample unavailable')}
         ${metric('Read length', s ? `${num(s.readLengthMedian)} bp` : '—', 'sampled', 'median sampled aligned read length')}
         ${metric('Cell barcodes seen', s ? num(s.uniqueBarcodesObserved) : '—', 'sampled', s?.tagPresence?.CB ? `${pct(s.tagPresence.CB)} of records carry CB` : 'CB not detected')}
         ${metric('Cell-associated knee', knee ? `~${num(knee.estimatedCells)}` : '—', 'inferred', knee ? `sample barcode rank · ${knee.confidence} confidence` : 'insufficient barcode-rank signal')}
@@ -66,11 +66,13 @@ function bamPanel(bam, index) {
 
       ${s ? `<div class="grid-2">
         <div class="viz-card"><div class="viz-head"><strong>Barcode rank</strong><span>${badge('sampled')} knee is ${badge('inferred')}</span></div><canvas class="chart barcode-chart" data-bam-index="${index}"></canvas></div>
-        <div class="viz-card"><div class="viz-head"><strong>Alignment region</strong><span>${num(s.records)} sampled records</span></div>${barList(regionEntries, s.records, regionLabels)}</div>
+        <div class="viz-card"><div class="viz-head"><strong>Alignment region</strong><span>${num(s.records)} sampled records · 95% Wilson margin</span></div>${barList(regionEntries, s.records, regionLabels, s.uncertainty?.regions)}</div>
         <div class="viz-card"><div class="viz-head"><strong>Read flags / structure</strong><span>${badge('sampled')}</span></div>${barList([
           ['Duplicate', s.flags.duplicate], ['Secondary', s.flags.secondary], ['Supplementary', s.flags.supplementary], ['Spliced', s.spliced], ['Paired', s.flags.paired]
-        ], s.records)}</div>
+        ], s.records, {}, s.uncertainty?.flags)}</div>
         <div class="viz-card"><div class="viz-head"><strong>Top assigned genes</strong><span>GN or GX tags</span></div>${barList(s.topGenes || [], null)}</div>
+        <div class="viz-card"><div class="viz-head"><strong>Barcode data shape</strong><span>${badge('sampled')}</span></div><div class="metric-sub">${s.barcodeShape ? `${num(s.barcodeShape.retainedBarcodes)} barcodes retained · ${num(s.barcodeShape.readsPerBarcodeMedian)} reads/barcode · ${num(s.barcodeShape.umisPerBarcodeMedian)} UMIs/barcode · ${num(s.barcodeShape.genesPerBarcodeMedian)} genes/barcode · ambient-tail reads ${pct(s.barcodeShape.ambientTailFraction)}` : 'Barcode sketches unavailable.'}</div></div>
+        <div class="viz-card"><div class="viz-head"><strong>Sampling convergence</strong><span>${s.convergence?.length || 0} batches</span></div><div class="metric-sub">${s.convergence?.length > 1 ? `${s.sampling?.strategy}; ${s.sampling?.converged ? 'stable' : 'still moving at sample limit'}` : 'Single bounded sample; enable Deep mode for progressive convergence.'}</div></div>
       </div>` : ''}
 
       ${refRows.length ? `<div class="viz-card" style="margin-top:12px"><div class="viz-head"><strong>Reference shape</strong><span>${badge('exact')} ${refRows.length < perRef.length ? `top ${refRows.length} of ${perRef.length}` : `${perRef.length} references`}</span></div>${table(['Reference', 'Length', 'Mapped', 'Placed unmapped'], refRows)}</div>` : ''}
@@ -81,9 +83,9 @@ function bamPanel(bam, index) {
 }
 
 function fastqPanel(fq, index) {
-  if (fq.error) return `<article class="panel"><div class="panel-head"><div class="panel-title"><span class="file-type">FASTQ</span><div><h3>${esc(fq.fileName)}</h3><p>${formatBytes(fq.size)}</p></div></div><span class="status warn">Could not sample</span></div><div class="panel-body"><ul class="warning-list"><li>${esc(fq.error)}</li></ul></div></article>`;
+  if (fq.error) return `<article class="panel"><div class="panel-head"><div class="panel-title"><span class="file-type">FASTQ</span><div>${fq.datasetLabel ? `<div class="section-kicker">${esc(fq.datasetLabel)}</div>` : ''}<h3>${esc(fq.fileName)}</h3><p>${formatBytes(fq.size)}</p></div></div><span class="status warn">Could not sample</span></div><div class="panel-body"><ul class="warning-list"><li>${esc(fq.error)}</li></ul></div></article>`;
   return `<article class="panel">
-    <div class="panel-head"><div class="panel-title"><span class="file-type">FASTQ</span><div><h3>${esc(fq.fileName)}</h3><p>${formatBytes(fq.size)} · ${fq.gzip ? 'gzip compressed' : 'uncompressed'} · ${num(fq.reads)} reads sampled</p></div></div><span class="status good">Local stream sample</span></div>
+    <div class="panel-head"><div class="panel-title"><span class="file-type">FASTQ</span><div>${fq.datasetLabel ? `<div class="section-kicker">${esc(fq.datasetLabel)}</div>` : ''}<h3>${esc(fq.fileName)}</h3><p>${formatBytes(fq.size)} · ${fq.gzip ? 'gzip compressed' : 'uncompressed'} · ${num(fq.reads)} reads sampled</p></div></div><span class="status good">${esc(fq.sampling?.strategy || 'Local sample')}</span></div>
     <div class="panel-body">
       <div class="metric-grid">
         ${metric('Median read length', `${num(fq.medianLength)} bp`, 'sampled')}
@@ -101,6 +103,7 @@ function fastqPanel(fq, index) {
       </div>
       ${fq.topSequences?.length ? `<div class="viz-card" style="margin-top:12px"><div class="viz-head"><strong>Most repeated sampled sequences</strong><span>diagnostic only</span></div>${table(['Sequence', 'Count'], fq.topSequences.map((x) => [x.sequence.length > 80 ? `${x.sequence.slice(0, 77)}…` : x.sequence, num(x.count)]))}</div>` : ''}
       <details><summary>First FASTQ header</summary><pre>${esc(fq.firstHeader || '')}</pre></details>
+      <div class="metric-sub">Sampling: ${esc(fq.sampling?.limitation || 'bounded sample')} · integrity: ${num(fq.integrity?.malformedRecords || 0)} malformed records, ${num(fq.integrity?.invalidQuality || 0)} invalid quality bytes${fq.integrity?.readNumberConsistent === false ? ' · inconsistent read-number headers' : ''}</div>
     </div>
   </article>`;
 }
@@ -170,7 +173,11 @@ function drawBases(canvas, cycles) {
 export function renderResults(container, result) {
   const totalFiles = result.files?.length || 0;
   const pair = result.fastq?.pairInference;
+  const datasets = result.datasets || [];
+  const datasetSummary = datasets.length ? `<div class="dataset-list">${datasets.map((d) => `<div class="callout"><div><strong>${esc(d.label)}</strong><span>${esc(d.summary)}${d.warnings?.length ? ` · ${esc(d.warnings.join(' '))}` : ''}</span></div><span class="metric-badge exact">BOUNDARY</span></div>`).join('')}</div>` : '';
+  const unassigned = result.unassigned?.length ? `<div class="callout"><div><strong>Unassigned files</strong><span>${result.unassigned.map((f) => `${esc(f.name)}: ${esc(f.reason)}`).join(' · ')}</span></div><span class="status warn">Review</span></div>` : '';
   container.innerHTML = `<div class="results-head"><div><div class="section-kicker">RESULTS</div><h2>Dataset preflight</h2></div><div class="result-actions"><button id="exportJsonBtn" class="button secondary" type="button">Export JSON</button></div></div>
+  ${datasetSummary}${unassigned}
   ${pair ? `<div class="callout"><div><strong>${esc(pair.label)}</strong><span>${esc(pair.r1)} + ${esc(pair.r2)}${pair.note ? ` · ${esc(pair.note)}` : ''}</span></div>${confidence(pair.confidence)}</div>` : ''}
   ${result.bam?.map((b, i) => bamPanel(b, i)).join('') || ''}
   ${result.fastq?.files?.map((f, i) => fastqPanel(f, i)).join('') || ''}

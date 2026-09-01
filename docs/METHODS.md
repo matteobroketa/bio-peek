@@ -39,13 +39,21 @@ Here `n_unmapped` means **placed unmapped** records on that reference. If presen
 
 If the pseudo-bin or trailing field is absent, bio-peek reports the affected exact metric as unavailable rather than substituting an estimate.
 
+Before using an index, its reference count, virtual offsets, chunk ordering, linear-index monotonicity and file bounds are checked. Representative indexed offsets are then read as BGZF members and decoded through at least one complete BAM record, including CIGAR and auxiliary-field validation. A failed check rejects the index for that BAM rather than exposing misleading exact counts.
+
+## Dataset resolution
+
+Selected files are grouped by normalized sample name. BAM indexes are attached only to exact `sample.bam.bai` or `sample.bai` matches. FASTQ names recognize R1/R2 and I1/I2 roles, 10x `S/L/001` naming and multiple lanes. A dataset summary is shown before results; unmatched indexes and ambiguous associations remain unassigned.
+
 ## Distributed BAM sampling
 
 The BAI is not treated as coverage data. Normal BAI chunk starts (with linear offsets as a fallback) are collected, deduplicated and ordered by compressed file position. A bounded set of seek points is chosen across that range.
 
 At each seek point, bio-peek reads a bounded BGZF window and parses complete BAM records beginning at the indexed virtual offset. Duplicate sampled records caused by overlapping index chunks are removed using reference, position, read name and flag.
 
-This gives broad file coverage for coordinate-sorted BAMs without claiming an exactly uniform random sample. Consequently, all metrics from these records are labeled **SAMPLED**.
+Sampling is explicitly stratified: references receive bounded representation and each selected point retains its index bin/chunk region identifier. This prevents a reference or dense group of bins from consuming the whole sample. Reference/index coverage and the sampled alignment classes (primary, secondary, supplementary and unmapped) are retained in the result. This is still not an exactly uniform random sample; all metrics from these records are labeled **SAMPLED**.
+
+Deep mode records checkpoints as batches accumulate. It compares MAPQ median, read-length median, exonic fraction and barcode rate between checkpoints. Two successive stable comparisons after the minimum burn-in stop additional work; if the record ceiling is reached first, the result is marked as still moving. Proportion margins use a 95% binomial approximation and should be interpreted as within-sample uncertainty; they do not correct unknown index or biological selection effects.
 
 ## BAM record fields
 
@@ -74,13 +82,15 @@ Source: https://www.10xgenomics.com/support/software/cell-ranger/latest/analysis
 
 The barcode-rank curve is built only from sampled `CB` observations. Counts are sorted descending. The current exploratory knee heuristic searches for the maximum perpendicular distance from the endpoint chord in log-rank/log-count space after trimming unstable extremes.
 
+For each bounded set of observed barcodes, bio-peek sketches reads, distinct observed UMIs, distinct observed genes and mitochondrial observations. Per-barcode sets and the global deduplication keys have hard ceilings. Median reads/barcode, UMIs/barcode, genes/barcode, mitochondrial fraction and the post-knee tail fraction are therefore sample-derived shape summaries; they are not exact cell-associated counts.
+
 This result is always **INFERRED**, never exact. It should be treated as an early visual estimate of dataset shape, not a Cell Ranger cell call.
 
 ## FASTQ
 
 FASTQ has no equivalent of BAI summary metadata. bio-peek therefore streams a bounded number of conventional four-line FASTQ records.
 
-For `.gz`, the browser stream is piped through `DecompressionStream('gzip')`. The reader is cancelled when the requested sample count has been reached.
+For ordinary `.gz`, the browser stream is piped through `DecompressionStream('gzip')` and the reader is cancelled when the requested sample count has been reached; this is reported as a prefix stream sample because gzip lacks random access. Uncompressed FASTQ is sampled from up to 16 evenly distributed byte ranges, each aligned forward to a complete four-line record. The result reports the number of windows and the boundary limitation.
 
 Calculated sample metrics include:
 
@@ -93,6 +103,7 @@ Calculated sample metrics include:
 - Illumina adapter motif occurrence;
 - observed sample duplication;
 - cycle entropy.
+- malformed four-line records, invalid bases/quality bytes, quality byte range and read-number consistency.
 
 The paired-read layout inference is intentionally conservative. Read lengths alone are insufficient to identify a specific 10x chemistry with certainty.
 

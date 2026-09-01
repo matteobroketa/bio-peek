@@ -1,5 +1,9 @@
 const textDecoder = new TextDecoder();
 
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw new DOMException('Operation cancelled', 'AbortError');
+}
+
 export function parseBgzfBlockSize(header) {
   const bytes = header instanceof Uint8Array ? header : new Uint8Array(header);
   if (bytes.length < 18) throw new Error('Truncated BGZF header');
@@ -33,13 +37,16 @@ export async function gunzipMember(arrayBuffer) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-export async function readOneBgzfBlock(file, compressedOffset) {
+export async function readOneBgzfBlock(file, compressedOffset, { signal, onBytes = () => {} } = {}) {
+  throwIfAborted(signal);
   if (compressedOffset >= file.size) return null;
   const headerBuf = await file.slice(compressedOffset, Math.min(file.size, compressedOffset + 256)).arrayBuffer();
   const header = new Uint8Array(headerBuf);
   const blockSize = parseBgzfBlockSize(header);
   if (compressedOffset + blockSize > file.size) throw new Error('Truncated BGZF block at end of file');
   const blockBuf = await file.slice(compressedOffset, compressedOffset + blockSize).arrayBuffer();
+  onBytes(blockSize);
+  throwIfAborted(signal);
   const data = await gunzipMember(blockBuf);
   return { compressedOffset, blockSize, data };
 }
@@ -48,6 +55,8 @@ export async function readBgzfWindow(file, compressedOffset, {
   maxCompressedBytes = 2 * 1024 * 1024,
   maxBlocks = 64,
   maxUncompressedBytes = 4 * 1024 * 1024,
+  signal,
+  onBytes = () => {},
 } = {}) {
   const blocks = [];
   let pos = compressedOffset;
@@ -60,7 +69,8 @@ export async function readBgzfWindow(file, compressedOffset, {
     compressedRead < maxCompressedBytes &&
     uncompressedRead < maxUncompressedBytes
   ) {
-    const block = await readOneBgzfBlock(file, pos);
+    throwIfAborted(signal);
+    const block = await readOneBgzfBlock(file, pos, { signal, onBytes });
     if (!block) break;
     blocks.push(block);
     pos += block.blockSize;
