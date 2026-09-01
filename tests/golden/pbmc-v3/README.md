@@ -2,7 +2,7 @@
 
 This fixture is derived from the official [1k PBMC v3 dataset](https://www.10xgenomics.com/datasets/1-k-pbm-cs-from-a-healthy-donor-v-3-chemistry-3-standard-3-0-0). The dataset is a 3′ single-cell library with 28 bp R1, 91 bp R2 and an 8 bp I7 read; the published Cell Ranger result reports 1,222 detected cells.
 
-Download the original `pbmc_1k_v3_possorted_genome_bam.bam` and matching `.bai`, R1 and R2 FASTQs into `source/`, then run:
+Download the original `pbmc_1k_v3_possorted_genome_bam.bam` and the two lane pairs (`L001` and `L002`) of R1/R2 FASTQs into `source/` (or `source/pbmc_1k_v3_fastqs/`), then run:
 
 ```bash
 npm run golden:pbmc

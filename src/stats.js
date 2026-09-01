@@ -90,6 +90,36 @@ export function inferReferenceBuild(references) {
   };
 }
 
+const HUMAN_PRIMARY = new Set([...Array.from({ length: 22 }, (_, i) => `chr${i + 1}`), 'chrX', 'chrY']);
+const HUMAN_PRIMARY_BARE = new Set([...Array.from({ length: 22 }, (_, i) => String(i + 1)), 'X', 'Y']);
+
+export function fingerprintReferences(references = []) {
+  const names = references.map((r) => r.name);
+  const naming = names.filter((name) => /^chr/i.test(name)).length >= names.filter((name) => !/^chr/i.test(name)).length
+    ? 'chr-prefixed' : 'non-prefixed';
+  const primarySet = naming === 'chr-prefixed' ? HUMAN_PRIMARY : HUMAN_PRIMARY_BARE;
+  const primaryCount = names.filter((name) => primarySet.has(name)).length;
+  const mitochondrial = names.find((name) => /^(?:chrM|MT|M)$/i.test(name)) || null;
+  const sexChromosomes = names.filter((name) => /^(?:chr)?[XY]$/i.test(name));
+  const altDecoy = names.filter((name) => /(?:_alt$|_decoy$|(?:^|_)HLA-|(?:^|_)KI\d|(?:^|_)GL\d)/i.test(name));
+  const smallUnusual = references.filter((r) => r.length < 1_000_000 && !/^(?:chrM|MT|M)$/i.test(r.name) && !altDecoy.includes(r.name)).map((r) => r.name);
+  const build = inferReferenceBuild(references);
+  const expectedPrimary = primaryCount >= 20 ? 24 : null;
+  return {
+    ...build,
+    naming,
+    primaryCount,
+    expectedPrimary,
+    primaryComplete: expectedPrimary != null && primaryCount >= expectedPrimary,
+    altDecoyCount: altDecoy.length,
+    altDecoy: altDecoy.slice(0, 20),
+    smallUnusual: smallUnusual.slice(0, 20),
+    mitochondrial,
+    sexChromosomes,
+    referenceCount: names.length,
+  };
+}
+
 export function fraction(n, d) {
   return d ? n / d : 0;
 }

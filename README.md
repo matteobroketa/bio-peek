@@ -21,7 +21,7 @@ bio-peek is a static browser application for quickly understanding the structure
 
 **Sampled**
 
-- Selects seek points from the BAI and decodes local BGZF windows from distributed parts of a coordinate-sorted BAM.
+- Selects explicitly stratified seek points across references/index regions and decodes local BGZF windows from a coordinate-sorted BAM.
 - Parses BAM core fields, CIGAR and selected auxiliary tags.
 - Computes MAPQ, aligned read length, duplicate/secondary/supplementary/paired flags and spliced-alignment frequency.
 - Detects scRNA-relevant tags including `CB`, `CR`, `UB`, `UR`, `GX`, `GN`, `RE`, `RG`, `MM/mm`, `NH` and `xf`.
@@ -31,11 +31,12 @@ bio-peek is a static browser application for quickly understanding the structure
 **Inferred**
 
 - Identifies likely single-cell RNA sequencing when barcode + UMI + gene tags support that interpretation.
-- Produces a preliminary barcode-knee estimate. It is explicitly labeled inferred and is not presented as an exact cell call.
+- Produces a preliminary barcode-knee estimate and bounded per-barcode reads/UMI/gene/mitochondrial sketches. These are explicitly labeled inferred and are not presented as exact cell calls.
+- Reports a reference fingerprint and heuristic library-health flags for duplication, gene-tag coverage, mitochondrial signal, barcode-knee strength and unusual contigs.
 
 ### FASTQ / FASTQ.GZ
 
-FASTQ files do not carry summary indexes, so bio-peek streams only an initial sample and then cancels the reader.
+FASTQ files do not carry summary indexes. Uncompressed files use distributed byte ranges; ordinary gzip files are explicitly labeled as prefix/stream samples.
 
 - Read-length distribution.
 - Q20/Q30 base fraction.
@@ -47,6 +48,7 @@ FASTQ files do not carry summary indexes, so bio-peek streams only an initial sa
 - Terminal poly-A and poly-G signal.
 - Illumina header fields when recognizable.
 - Conservative paired-layout inference (for example, a 28 bp R1 plus long R2 is reported as *10x-like barcode/UMI + cDNA*, not as a definitive chemistry call).
+- When a resolved BAM and FASTQ pair are present, a bounded layout consistency check compares R1 barcode+UMI length, R2 length and Illumina lane metadata.
 
 ### FAI
 
@@ -103,6 +105,8 @@ npm run test:browser
 ```
 
 Tests include synthetic spec-conformant BAI data and a synthetic BAM encoded as a real BGZF member. The BAM fixture verifies header decoding, EOF detection, BAI virtual-offset sampling, BAM record parsing and scRNA auxiliary tags.
+
+The reproducible PBMC v3 golden recipe is available under `tests/golden/pbmc-v3`; it requires the official source files and local `samtools`/`seqkit` (with optional `fastp` and Cell Ranger output). After a browser export, `npm run golden:compare -- --bio-peek-json bio-peek.json` applies the declared tolerances. Results can also be handed off through the compact **Export receipt** text download.
 
 ## Important limitations
 

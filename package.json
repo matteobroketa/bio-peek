@@ -1,12 +1,12 @@
 {
   "name": "bio-peek",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Zero-upload genomic preflight inspector for BAM/BAI, FASTQ and FAI files.",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check src/app.js && node --check src/file-ingest.js && node --check src/worker.js && node --check src/bam.js && node --check src/bai.js && node --check src/bgzf.js && node --check src/fastq.js && node --check src/ui.js && node --check src/dataset-resolver.js",
+    "check": "node --check src/app.js && node --check src/file-ingest.js && node --check src/worker.js && node --check src/bam.js && node --check src/bai.js && node --check src/bgzf.js && node --check src/fastq.js && node --check src/ui.js && node --check src/consistency.js && node --check src/stats.js && node --check src/dataset-resolver.js",
     "test:browser": "playwright test",
     "test:ci": "npm test && npm run check && npm run test:browser",
     "golden:pbmc": "node scripts/golden-pbmc-v3.mjs",

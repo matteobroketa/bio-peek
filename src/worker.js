@@ -3,11 +3,13 @@ import { readBamHeader, checkBamEof, sampleBam, validateBamIndex } from './bam.j
 import { sampleFastq, inferFastqPair } from './fastq.js';
 import { parseFai, summarizeFai } from './fai.js';
 import { datasetFiles, resolveDatasets } from './dataset-resolver.js';
+import { formatBytes } from './stats.js';
+import { compareFastqBam } from './consistency.js';
 
 function post(type, payload = {}) { self.postMessage({ type, ...payload }); }
 let activeController = null;
 
-async function analyzeBam(bam, baiFile, mode, datasetLabel, { signal, onBytes, totalBytes } = {}) {
+async function analyzeBam(bam, baiFile, mode, datasetLabel, { signal, onBytes, totalBytes, getBytesRead = () => 0 } = {}) {
   post('progress', { stage: 'bam-header', message: `Reading ${bam.name} header…` });
   const [header, eof] = await Promise.all([readBamHeader(bam, { signal, onBytes }), checkBamEof(bam, { signal, onBytes })]);
   const result = {
@@ -23,6 +25,9 @@ async function analyzeBam(bam, baiFile, mode, datasetLabel, { signal, onBytes, t
     },
     index: null,
     sample: null,
+    structuralStatus: 'pass',
+    samplingStatus: baiFile ? 'pending' : 'unavailable',
+    sampleError: null,
     warnings: [],
   };
 
@@ -51,6 +56,8 @@ async function analyzeBam(bam, baiFile, mode, datasetLabel, { signal, onBytes, t
     if (!bai.hasMetadataCounts) result.warnings.push('This BAI does not contain optional metadata pseudo-bins, so exact idxstats-style mapped counts are unavailable.');
   } catch (err) {
     if (err?.name === 'AbortError') throw err;
+    result.samplingStatus = 'failed';
+    result.sampleError = err.message;
     result.warnings.push(`BAI rejected during compatibility/integrity validation: ${err.message}`);
     return result;
   }
@@ -69,19 +76,23 @@ async function analyzeBam(bam, baiFile, mode, datasetLabel, { signal, onBytes, t
         message: `Sampled ${p.records.toLocaleString()} BAM records…`,
         current: p.completed,
         total: p.total,
-        bytesRead,
+        bytesRead: getBytesRead(),
         stable: p.stable,
-        totalBytes: filesTotalBytes,
+        totalBytes,
       }),
     });
+    result.samplingStatus = 'pass';
     result.sample.strategy = result.sample.sampling?.strategy || 'reference- and index-region-stratified BAI sample';
   } catch (err) {
-    result.warnings.push(`BAM sampling failed: ${err.message}`);
+    if (err?.name === 'AbortError') throw err;
+    result.samplingStatus = 'failed';
+    result.sampleError = err.message;
+    result.warnings.push(`BAM sampling failed after ${formatBytes(getBytesRead())} / ${formatBytes(bam.size)}: ${err.message}`);
   }
   return result;
 }
 
-async function analyzeFastqs(files, mode, datasetLabel, { signal, onBytes, totalBytes } = {}) {
+async function analyzeFastqs(files, mode, datasetLabel, { signal, onBytes, totalBytes, getBytesRead = () => 0 } = {}) {
   const results = [];
   const targetReads = mode === 'deep' ? 200_000 : 50_000;
   for (let i = 0; i < files.length; i++) {
@@ -93,7 +104,7 @@ async function analyzeFastqs(files, mode, datasetLabel, { signal, onBytes, total
         signal,
         onBytes,
         onProgress: (p) => post('progress', {
-          stage: 'fastq', message: `${file.name}: ${p.reads.toLocaleString()} reads sampled…`, current: p.reads, total: targetReads, bytesRead, totalBytes: filesTotalBytes,
+          stage: 'fastq', message: `${file.name}: ${p.reads.toLocaleString()} reads sampled…`, current: p.reads, total: targetReads, bytesRead: getBytesRead(), totalBytes,
         }),
       });
       r.size = file.size;
@@ -136,13 +147,16 @@ self.onmessage = async (event) => {
     for (const dataset of resolved.datasets) {
       const datasetResult = { id: dataset.id, label: dataset.label, summary: dataset.summary, files: datasetFiles(dataset).map((f) => ({ name: f.name, size: f.size })), warnings: [...dataset.warnings], bam: [], fastq: null };
       if (dataset.bam) {
-        const bamResult = await analyzeBam(dataset.bam, dataset.bai, mode, dataset.label, { signal, onBytes, totalBytes: filesTotalBytes });
+        const bamResult = await analyzeBam(dataset.bam, dataset.bai, mode, dataset.label, { signal, onBytes, totalBytes: filesTotalBytes, getBytesRead: () => bytesRead });
         datasetResult.bam.push(bamResult);
         output.bam.push(bamResult);
       }
       const fastqFiles = Object.values(dataset.fastq).flat();
       if (fastqFiles.length) {
-        datasetResult.fastq = await analyzeFastqs(fastqFiles, mode, dataset.label, { signal, onBytes, totalBytes: filesTotalBytes });
+        datasetResult.fastq = await analyzeFastqs(fastqFiles, mode, dataset.label, { signal, onBytes, totalBytes: filesTotalBytes, getBytesRead: () => bytesRead });
+        if (datasetResult.bam[0]) {
+          datasetResult.bam[0].consistency = compareFastqBam(datasetResult.bam[0], datasetResult.fastq.files);
+        }
         output.fastq = output.fastq || { files: [], pairInference: null };
         output.fastq.files.push(...datasetResult.fastq.files);
         if (datasetResult.fastq.pairInference) output.fastq.pairInference = datasetResult.fastq.pairInference;

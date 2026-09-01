@@ -55,13 +55,16 @@ test('matches BAM plus BAI, validates the index and renders BAM metrics', async 
   await expect(page.locator('#results')).toContainText('Mapped records');
 });
 
-test('renders demo mode and exports JSON', async ({ page }) => {
+test('renders demo mode and exports JSON and receipt', async ({ page }) => {
   await page.locator('#demoBtn').click();
   await expect(page.locator('#results')).toContainText('Dataset preflight');
   await expect(page.locator('#results')).toContainText('Cell-associated knee');
   const download = page.waitForEvent('download');
   await page.locator('#exportJsonBtn').click();
   await expect((await download).suggestedFilename()).toMatch(/^bio-peek-\d{4}-\d{2}-\d{2}\.json$/);
+  const receipt = page.waitForEvent('download');
+  await page.locator('#exportReceiptBtn').click();
+  await expect((await receipt).suggestedFilename()).toMatch(/^bio-peek-\d{4}-\d{2}-\d{2}-receipt\.txt$/);
 });
 
 test('shows a user-facing failure for malformed BAM input', async ({ page }) => {

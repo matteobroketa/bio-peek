@@ -22,10 +22,17 @@ function table(headers, rows) {
   return `<div class="table-wrap"><table><thead><tr>${headers.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((x) => `<td>${esc(x)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 
+function healthMarkup(flags = []) {
+  if (!flags.length) return '<div class="metric-sub">Health flags become available after a successful BAM sample.</div>';
+  return `<div class="health-list">${flags.map((flag) => `<div class="health-row"><span class="status ${flag.level === 'good' ? 'good' : 'warn'}">${flag.level === 'good' ? '✓' : '!'}</span><div><strong>${esc(flag.label)}</strong><span>${esc(flag.note)}</span></div></div>`).join('')}</div>`;
+}
+
 function bamPanel(bam, index) {
   const h = bam.header;
   const idx = bam.index;
   const s = bam.sample;
+  const samplingFailed = bam.samplingStatus === 'failed';
+  const samplingUnavailable = bam.samplingStatus === 'unavailable';
   const mapped = bigToNumber(idx?.mapped);
   const unmapped = bigToNumber(idx?.totalUnmapped);
   const total = mapped != null && unmapped != null ? mapped + unmapped : null;
@@ -36,7 +43,8 @@ function bamPanel(bam, index) {
   const samples = [...new Set((h.fields.RG || []).map((r) => r.SM).filter(Boolean))];
   const libs = [...new Set((h.fields.RG || []).map((r) => r.LB).filter(Boolean))];
   const programs = (h.fields.PG || []).map((p) => p.PN || p.ID).filter(Boolean);
-  const assay = s?.assay || { label: 'Alignment file', confidence: 'low' };
+  const assay = s?.assay || { label: 'scRNA interpretation unavailable', confidence: 'low' };
+  const fingerprint = h.referenceFingerprint;
   const knee = s?.knee;
   const regionLabels = { E: 'Exonic', N: 'Intronic', I: 'Intergenic' };
   const regionEntries = s ? Object.entries(s.regions || {}) : [];
@@ -52,16 +60,17 @@ function bamPanel(bam, index) {
       <span class="status ${bam.eof ? 'good' : 'warn'}">${bam.eof ? 'EOF marker present' : 'EOF marker missing'}</span>
     </div>
     <div class="panel-body">
-      <div class="callout"><div><strong>${esc(assay.label)}</strong><span>${esc(h.referenceBuild?.label || 'Unknown reference')} · ${esc(h.fields.HD?.SO || 'sort order unknown')}${samples.length ? ` · sample ${esc(samples.join(', '))}` : ''}</span></div>${confidence(assay.confidence)}</div>
+      <div class="status-strip"><span class="status good">Structural ✓</span><span class="status ${samplingFailed ? 'warn' : samplingUnavailable ? 'warn' : 'good'}">Sampling ${samplingFailed ? '✕ FAILED' : samplingUnavailable ? '— UNAVAILABLE' : '✓'}</span><span class="status ${s?.assay?.label === 'Single-cell RNA sequencing' ? 'good' : 'warn'}">${s?.assay?.label === 'Single-cell RNA sequencing' ? 'scRNA interpretation ✓' : 'scRNA interpretation unavailable'}</span></div>
+      <div class="callout"><div><strong>${esc(assay.label)}${assay.platform ? ` · ${esc(assay.platform)}` : ''}</strong><span>${esc(h.referenceBuild?.label || 'Unknown reference')} · ${esc(h.fields.HD?.SO || 'sort order unknown')}${samples.length ? ` · sample ${esc(samples.join(', '))}` : ''}</span>${assay.chemistry ? `<span class="evidence-line">Chemistry: ${esc(assay.chemistry)} · evidence: ${esc((assay.evidence || []).join(', ') || 'none recorded')}</span>` : ''}</div>${s ? confidence(assay.confidence) : '<span class="status warn">UNAVAILABLE</span>'}</div>
       <div class="metric-grid">
         ${metric('Mapped records', mapped == null ? '—' : num(mapped), 'exact', idx?.hasMetadataCounts ? 'BAI metadata pseudo-bin' : 'BAI counts unavailable')}
         ${metric('Mapped fraction', mappedFraction == null ? '—' : pct(mappedFraction), 'exact', total ? `${num(total)} total indexed records` : 'requires BAI metadata counts')}
         ${metric('Mitochondrial fraction', mitoFraction == null ? '—' : pct(mitoFraction), 'exact', mito ? `${mito.name} mapped / all mapped` : 'mitochondrial contig not recognized')}
         ${metric('Reference sequences', num(h.references.length), 'exact', h.referenceBuild?.naming || '')}
-        ${metric('Median MAPQ', s ? num(s.mapqMedian) : '—', 'sampled', s ? `${num(s.records)} records · ${s.sampling?.strategy || 'stratified sample'}` : 'sample unavailable')}
-        ${metric('Read length', s ? `${num(s.readLengthMedian)} bp` : '—', 'sampled', 'median sampled aligned read length')}
-        ${metric('Cell barcodes seen', s ? num(s.uniqueBarcodesObserved) : '—', 'sampled', s?.tagPresence?.CB ? `${pct(s.tagPresence.CB)} of records carry CB` : 'CB not detected')}
-        ${metric('Cell-associated knee', knee ? `~${num(knee.estimatedCells)}` : '—', 'inferred', knee ? `sample barcode rank · ${knee.confidence} confidence` : 'insufficient barcode-rank signal')}
+        ${metric('Median MAPQ', samplingFailed ? 'FAILED' : s ? num(s.mapqMedian) : '—', 'sampled', samplingFailed ? bam.sampleError : s ? `${num(s.records)} records · ${s.sampling?.strategy || 'stratified sample'}` : 'sample unavailable')}
+        ${metric('Read length', samplingFailed ? 'FAILED' : s ? `${num(s.readLengthMedian)} bp` : '—', 'sampled', samplingFailed ? 'sampling did not produce a trustworthy estimate' : 'median sampled aligned read length')}
+        ${metric('Cell barcodes seen', samplingFailed ? 'FAILED' : s ? num(s.uniqueBarcodesObserved) : '—', 'sampled', samplingFailed ? 'sampling did not produce a trustworthy estimate' : s?.tagPresence?.CB ? `${pct(s.tagPresence.CB)} of records carry CB` : 'CB not detected')}
+        ${metric('Cell-associated knee', samplingFailed ? 'FAILED' : knee ? `~${num(knee.estimatedCells)}` : '—', 'inferred', samplingFailed ? 'scRNA interpretation unavailable because sampling failed' : knee ? `sample barcode rank · ${knee.confidence} confidence` : 'insufficient barcode-rank signal')}
       </div>
 
       ${s ? `<div class="grid-2">
@@ -71,11 +80,14 @@ function bamPanel(bam, index) {
           ['Duplicate', s.flags.duplicate], ['Secondary', s.flags.secondary], ['Supplementary', s.flags.supplementary], ['Spliced', s.spliced], ['Paired', s.flags.paired]
         ], s.records, {}, s.uncertainty?.flags)}</div>
         <div class="viz-card"><div class="viz-head"><strong>Top assigned genes</strong><span>GN or GX tags</span></div>${barList(s.topGenes || [], null)}</div>
-        <div class="viz-card"><div class="viz-head"><strong>Barcode data shape</strong><span>${badge('sampled')}</span></div><div class="metric-sub">${s.barcodeShape ? `${num(s.barcodeShape.retainedBarcodes)} barcodes retained · ${num(s.barcodeShape.readsPerBarcodeMedian)} reads/barcode · ${num(s.barcodeShape.umisPerBarcodeMedian)} UMIs/barcode · ${num(s.barcodeShape.genesPerBarcodeMedian)} genes/barcode · ambient-tail reads ${pct(s.barcodeShape.ambientTailFraction)}` : 'Barcode sketches unavailable.'}</div></div>
-        <div class="viz-card"><div class="viz-head"><strong>Sampling convergence</strong><span>${s.convergence?.length || 0} batches</span></div><div class="metric-sub">${s.convergence?.length > 1 ? `${s.sampling?.strategy}; ${s.sampling?.converged ? 'stable' : 'still moving at sample limit'}` : 'Single bounded sample; enable Deep mode for progressive convergence.'}</div></div>
+        <div class="viz-card"><div class="viz-head"><strong>Barcode data shape</strong><span>${badge('sampled')}</span></div><div class="metric-sub">${s.barcodeShape ? `${num(s.barcodeShape.retainedBarcodes)} barcodes retained · ${num(s.barcodeShape.readsPerBarcodeMedian)} reads/barcode · ${num(s.barcodeShape.umisPerBarcodeMedian)} UMIs/barcode · ${num(s.barcodeShape.genesPerBarcodeMedian)} genes/barcode` : 'Barcode sketches unavailable.'}</div>${s.barcodeShape ? `<div class="metric-sub">Preliminary cell-associated medians: ${num(s.barcodeShape.cellAssociatedReadsPerBarcodeMedian)} reads · ${num(s.barcodeShape.cellAssociatedUmisPerBarcodeMedian)} UMIs · ${num(s.barcodeShape.cellAssociatedGenesPerBarcodeMedian)} genes/barcode · mitochondrial ${pct(s.barcodeShape.mitochondrialFractionMedian)} (P25–P75 ${pct(s.barcodeShape.mitochondrialFractionQuartiles?.[0])}–${pct(s.barcodeShape.mitochondrialFractionQuartiles?.[2])}) · ambient tail ${pct(s.barcodeShape.ambientTailFraction)}</div>` : ''}</div>
+        <div class="viz-card"><div class="viz-head"><strong>Sampling convergence</strong><span>${s.convergence?.length || 0} batches · ${s.sampling?.converged ? 'stable' : 'still moving'}</span></div><div class="metric-sub">${s.convergence?.length > 1 ? `${s.sampling?.strategy}; ${s.sampling?.converged ? 'key metrics stabilized' : 'key metrics were still moving at the sample limit'}` : 'Single bounded sample; enable Deep mode for progressive convergence.'}</div>${s.convergence?.length > 1 ? table(['Records', 'MAPQ median', 'Exonic', 'Barcode rate'], s.convergence.map((x) => [num(x.records), num(x.mapqMedian), pct(x.exonicFraction), pct(x.barcodeRate)])) : ''}</div>
+        <div class="viz-card"><div class="viz-head"><strong>Library health flags</strong><span>${badge('inferred')}</span></div>${healthMarkup(s.healthFlags)}</div>
       </div>` : ''}
 
+      ${fingerprint ? `<div class="viz-card" style="margin-top:12px"><div class="viz-head"><strong>Reference fingerprint</strong><span>${badge('exact')}</span></div><div class="metric-sub">${esc(fingerprint.label)} · ${esc(fingerprint.naming)} · ${num(fingerprint.referenceCount)} sequences · primary set ${num(fingerprint.primaryCount)}${fingerprint.expectedPrimary ? `/${num(fingerprint.expectedPrimary)}` : ''} · mitochondrial ${esc(fingerprint.mitochondrial || 'not recognized')} · ALT/decoy ${num(fingerprint.altDecoyCount)}</div>${fingerprint.smallUnusual?.length || fingerprint.altDecoy?.length ? `<div class="metric-sub">Unexpected/special contigs: ${esc([...(fingerprint.altDecoy || []), ...(fingerprint.smallUnusual || [])].join(', '))}</div>` : ''}</div>` : ''}
       ${refRows.length ? `<div class="viz-card" style="margin-top:12px"><div class="viz-head"><strong>Reference shape</strong><span>${badge('exact')} ${refRows.length < perRef.length ? `top ${refRows.length} of ${perRef.length}` : `${perRef.length} references`}</span></div>${table(['Reference', 'Length', 'Mapped', 'Placed unmapped'], refRows)}</div>` : ''}
+      ${bam.consistency ? `<div class="viz-card" style="margin-top:12px"><div class="viz-head"><strong>FASTQ ↔ BAM consistency</strong><span class="status ${bam.consistency.status === 'pass' ? 'good' : 'warn'}">${esc(bam.consistency.status)}</span></div>${table(['Check', 'Result', 'Note'], bam.consistency.checks.map((check) => [check.label, check.pass === true ? 'pass' : check.pass === false ? 'review' : 'limited', check.note]))}<div class="metric-sub">${esc(bam.consistency.limitation)}</div></div>` : ''}
       ${bam.warnings?.length ? `<ul class="warning-list">${bam.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
       <details><summary>Header metadata and provenance</summary><div class="metric-sub" style="margin:10px 0">Read groups: ${esc(samples.join(', ') || 'none')} · libraries: ${esc(libs.join(', ') || 'none')} · programs: ${esc(programs.join(' → ') || 'none')}</div><pre>${esc(h.text)}</pre></details>
     </div>
@@ -176,9 +188,11 @@ export function renderResults(container, result) {
   const datasets = result.datasets || [];
   const datasetSummary = datasets.length ? `<div class="dataset-list">${datasets.map((d) => `<div class="callout"><div><strong>${esc(d.label)}</strong><span>${esc(d.summary)}${d.warnings?.length ? ` · ${esc(d.warnings.join(' '))}` : ''}</span></div><span class="metric-badge exact">BOUNDARY</span></div>`).join('')}</div>` : '';
   const unassigned = result.unassigned?.length ? `<div class="callout"><div><strong>Unassigned files</strong><span>${result.unassigned.map((f) => `${esc(f.name)}: ${esc(f.reason)}`).join(' · ')}</span></div><span class="status warn">Review</span></div>` : '';
-  container.innerHTML = `<div class="results-head"><div><div class="section-kicker">RESULTS</div><h2>Dataset preflight</h2></div><div class="result-actions"><button id="exportJsonBtn" class="button secondary" type="button">Export JSON</button></div></div>
+  const comparison = result.bam?.length > 1 ? `<div class="viz-card comparison-card"><div class="viz-head"><strong>Multi-sample comparison</strong><span>${result.bam.length} BAMs · exact counts where BAI metadata is present</span></div>${table(['Sample', 'Mapped fraction', 'Sampled records', 'Knee', 'Warnings'], result.bam.map((bam) => { const mapped = bigToNumber(bam.index?.mapped); const unmapped = bigToNumber(bam.index?.totalUnmapped); const fraction = mapped != null && unmapped != null && mapped + unmapped ? mapped / (mapped + unmapped) : null; return [bam.datasetLabel || bam.name, pct(fraction), num(bam.sample?.records), bam.sample?.knee ? `~${num(bam.sample.knee.estimatedCells)}` : '—', num((bam.warnings || []).length + (bam.sample?.healthFlags || []).filter((x) => x.level === 'warn').length)]; }))}</div>` : '';
+  container.innerHTML = `<div class="results-head"><div><div class="section-kicker">RESULTS</div><h2>Dataset preflight</h2></div><div class="result-actions"><button id="exportJsonBtn" class="button secondary" type="button">Export JSON</button><button id="exportReceiptBtn" class="button secondary" type="button">Export receipt</button></div></div>
   ${datasetSummary}${unassigned}
   ${pair ? `<div class="callout"><div><strong>${esc(pair.label)}</strong><span>${esc(pair.r1)} + ${esc(pair.r2)}${pair.note ? ` · ${esc(pair.note)}` : ''}</span></div>${confidence(pair.confidence)}</div>` : ''}
+  ${comparison}
   ${result.bam?.map((b, i) => bamPanel(b, i)).join('') || ''}
   ${result.fastq?.files?.map((f, i) => fastqPanel(f, i)).join('') || ''}
   ${result.fai?.map((f) => faiPanel(f)).join('') || ''}

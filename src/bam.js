@@ -1,6 +1,6 @@
 import { readOneBgzfBlock, readBgzfWindow, concatUint8 } from './bgzf.js';
 import { collectStratifiedSamplingOffsets, collectSamplingOffsets, validateBaiAgainstBam, virtualOffsetParts } from './bai.js';
-import { estimateBarcodeKnee, inferReferenceBuild, medianFromHistogram, topEntries } from './stats.js';
+import { estimateBarcodeKnee, fingerprintReferences, inferReferenceBuild, medianFromHistogram, topEntries } from './stats.js';
 
 const td = new TextDecoder();
 const BAM_MAGIC = [66, 65, 77, 1];
@@ -85,6 +85,7 @@ export async function readBamHeader(file, { signal, onBytes = () => {} } = {}) {
         compressedHeaderBytes: compressedOffset + block.blockSize,
         bgzfBlocksRead: i + 1,
         referenceBuild: inferReferenceBuild(parsed.references),
+        referenceFingerprint: fingerprintReferences(parsed.references),
       };
     }
     compressedOffset += block.blockSize;
@@ -340,11 +341,24 @@ function medianArray(values) {
   return sorted[Math.floor(middle)] * (1 - (middle % 1)) + sorted[Math.ceil(middle)] * (middle % 1);
 }
 
+function percentileArray(values, p) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const index = Math.min(sorted.length - 1, Math.max(0, p * (sorted.length - 1)));
+  const lo = Math.floor(index), hi = Math.ceil(index);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (index - lo);
+}
+
 function proportionEstimate(count, total) {
   const n = Number(total);
   const p = n ? Number(count) / n : null;
   if (p == null) return { estimate: null, margin: null, n: 0 };
-  const margin = 1.96 * Math.sqrt(Math.max(0, p * (1 - p)) / Math.max(1, n));
+  // Wilson score interval half-width; it behaves better than a normal
+  // approximation for sparse and near-boundary proportions.
+  const z = 1.96;
+  const z2 = z * z;
+  const denominator = 1 + z2 / n;
+  const margin = z * Math.sqrt((p * (1 - p) / n) + (z2 / (4 * n * n))) / denominator;
   return { estimate: p, margin, n };
 }
 
@@ -369,9 +383,18 @@ function finalizeAccumulator(acc, header, { convergence = [], strata = [], conve
   const hasGene = (tagPresence.GX || 0) > 0.1 || (tagPresence.GN || 0) > 0.1;
   const hasRegion = (tagPresence.RE || 0) > 0.05;
   const pgText = header.fields.PG.map((p) => `${p.ID || ''} ${p.PN || ''} ${p.CL || ''}`).join(' ').toLowerCase();
+  const barcodeLength = [...acc.barcodeSketches.keys()][0]?.split('-')[0]?.length || null;
+  const umiLength = [...acc.uniqueUmis][0]?.split('|')[1]?.length || null;
+  const evidence = [];
+  if (barcodeLength) evidence.push(`CB ${barcodeLength} nt`);
+  if (umiLength) evidence.push(`UB ${umiLength} nt`);
+  if (hasGene) evidence.push('GX/GN present');
+  if (hasRegion) evidence.push('RE present');
+  if (pgText.includes('cellranger')) evidence.push('Cell Ranger @PG');
   let assay = { label: 'Generic alignment', confidence: 'low' };
   if ((hasCell && hasUmi && hasGene) || pgText.includes('cellranger')) {
-    assay = { label: 'Single-cell RNA sequencing', confidence: hasCell && hasUmi && hasGene && hasRegion ? 'high' : 'medium' };
+    const chemistry = barcodeLength === 16 && umiLength === 12 ? 'Compatible with 3′ v3/v3.1' : '10x-like chemistry; read structure not fully resolved';
+    assay = { label: 'Single-cell RNA sequencing', platform: '10x Chromium', confidence: hasCell && hasUmi && hasGene && hasRegion ? 'high' : 'medium', chemistry, barcodeLength, umiLength, evidence };
   } else if (hasCell && !hasUmi) {
     assay = { label: 'Barcoded sequencing', confidence: 'medium' };
   }
@@ -396,9 +419,24 @@ function finalizeAccumulator(acc, header, { convergence = [], strata = [], conve
     cellAssociatedUmisPerBarcodeMedian: medianArray(cellBarcodes.map((x) => x.umis)),
     cellAssociatedGenesPerBarcodeMedian: medianArray(cellBarcodes.map((x) => x.genes)),
     mitochondrialFractionMedian: medianArray(barcodeMetrics.map((x) => x.mitochondrialFraction)),
+    mitochondrialFractionQuartiles: [0.25, 0.5, 0.75].map((p) => percentileArray(barcodeMetrics.map((x) => x.mitochondrialFraction), p)),
     ambientTailFraction: totalBarcodedReads(acc.barcodes) ? tailReads / totalBarcodedReads(acc.barcodes) : null,
     sketches: barcodeMetrics.slice(0, 5000),
   };
+  const sampleMappedFraction = total ? acc.flags.mapped / total : null;
+  const duplicateFraction = total ? acc.flags.duplicate / total : null;
+  const geneAssignment = Math.max(tagPresence.GX || 0, tagPresence.GN || 0);
+  const mitochondrialSignal = barcodeShape.mitochondrialFractionMedian;
+  const healthFlags = [];
+  const addHealth = (id, level, label, value, note) => healthFlags.push({ id, level, label, value, note });
+  addHealth('alignment', sampleMappedFraction != null && sampleMappedFraction >= 0.9 ? 'good' : 'warn', 'Alignment fraction', sampleMappedFraction, sampleMappedFraction == null ? 'No sampled records.' : `${(sampleMappedFraction * 100).toFixed(1)}% of sampled records are mapped.`);
+  addHealth('duplication', duplicateFraction != null && duplicateFraction <= 0.5 ? 'good' : 'warn', 'Duplicate reads', duplicateFraction, duplicateFraction == null ? 'No sampled records.' : `${(duplicateFraction * 100).toFixed(1)}% of sampled records carry the duplicate flag.`);
+  addHealth('gene-assignment', geneAssignment >= 0.5 ? 'good' : 'warn', 'Gene assignment tags', geneAssignment, geneAssignment >= 0.5 ? 'GX/GN is present on most sampled records.' : 'GX/GN is sparse; gene-level interpretation is limited.');
+  addHealth('mitochondrial', mitochondrialSignal == null || mitochondrialSignal <= 0.2 ? 'good' : 'warn', 'Mitochondrial signal', mitochondrialSignal, mitochondrialSignal == null ? 'Per-barcode mitochondrial signal unavailable.' : `${(mitochondrialSignal * 100).toFixed(1)}% median mitochondrial fraction among retained barcodes.`);
+  addHealth('barcode-knee', knee?.confidence === 'medium' ? 'good' : 'warn', 'Barcode knee', knee?.confidence || null, knee ? `Preliminary knee near ${knee.estimatedCells.toLocaleString()} barcodes.` : 'No stable barcode knee was detected.');
+  const fp = header.referenceFingerprint;
+  const unusualContigs = (fp?.smallUnusual?.length || 0) + (fp?.altDecoyCount || 0);
+  addHealth('reference-contigs', unusualContigs ? 'warn' : 'good', 'Reference contigs', unusualContigs, unusualContigs ? `${fp.altDecoyCount || 0} ALT/decoy and ${fp.smallUnusual?.length || 0} other small contigs detected.` : 'No ALT/decoy or unusual small contigs detected.');
   const uncertainty = {
     regions: Object.fromEntries([...acc.regions].map(([key, count]) => [key, proportionEstimate(count, total)])),
     alignmentClasses: Object.fromEntries(Object.entries(acc.alignmentClasses).map(([key, count]) => [key, proportionEstimate(count, total)])),
@@ -425,6 +463,7 @@ function finalizeAccumulator(acc, header, { convergence = [], strata = [], conve
     barcodeRank,
     knee,
     barcodeShape,
+    healthFlags,
     convergence,
     sampling: {
       strategy: 'reference- and index-region-stratified BAI sample',

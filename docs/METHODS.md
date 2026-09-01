@@ -53,7 +53,7 @@ At each seek point, bio-peek reads a bounded BGZF window and parses complete BAM
 
 Sampling is explicitly stratified: references receive bounded representation and each selected point retains its index bin/chunk region identifier. This prevents a reference or dense group of bins from consuming the whole sample. Reference/index coverage and the sampled alignment classes (primary, secondary, supplementary and unmapped) are retained in the result. This is still not an exactly uniform random sample; all metrics from these records are labeled **SAMPLED**.
 
-Deep mode records checkpoints as batches accumulate. It compares MAPQ median, read-length median, exonic fraction and barcode rate between checkpoints. Two successive stable comparisons after the minimum burn-in stop additional work; if the record ceiling is reached first, the result is marked as still moving. Proportion margins use a 95% binomial approximation and should be interpreted as within-sample uncertainty; they do not correct unknown index or biological selection effects.
+Deep mode records checkpoints as batches accumulate. It compares MAPQ median, read-length median, exonic fraction and barcode rate between checkpoints. Two successive stable comparisons after the minimum burn-in stop additional work; if the record ceiling is reached first, the result is marked as still moving. Proportion margins use a 95% binomial approximation and should be interpreted as within-sample uncertainty; they do not correct unknown index or biological selection effects. The checkpoint history is exported so the UI can distinguish stable results from results still moving at the bounded sample limit.
 
 ## BAM record fields
 
@@ -86,6 +86,8 @@ For each bounded set of observed barcodes, bio-peek sketches reads, distinct obs
 
 This result is always **INFERRED**, never exact. It should be treated as an early visual estimate of dataset shape, not a Cell Ranger cell call.
 
+The BAM result also reports a reference fingerprint (recognized build, naming convention, primary-sequence coverage, mitochondrial name and ALT/decoy/small-contig counts). Library health flags are deliberately heuristic: duplicate fraction, gene-tag coverage, mitochondrial signal and barcode-knee strength are warnings for triage, not pass/fail release criteria.
+
 ## FASTQ
 
 FASTQ has no equivalent of BAI summary metadata. bio-peek therefore streams a bounded number of conventional four-line FASTQ records.
@@ -105,7 +107,13 @@ Calculated sample metrics include:
 - cycle entropy.
 - malformed four-line records, invalid bases/quality bytes, quality byte range and read-number consistency.
 
-The paired-read layout inference is intentionally conservative. Read lengths alone are insufficient to identify a specific 10x chemistry with certainty.
+The paired-read layout inference is intentionally conservative. Read lengths alone are insufficient to identify a specific 10x chemistry with certainty. When a BAM and FASTQ pair are resolved in the same dataset, bio-peek compares R1 barcode+UMI length, R2 median length and Illumina lane metadata. Because the two inputs are sampled independently, this is a layout sanity check rather than read-name or molecule-level concordance.
+
+## Golden validation and receipt
+
+`tests/golden/pbmc-v3` contains a reproducible fixture recipe for the official 1k PBMC v3 dataset. `npm run golden:pbmc` derives an indexed mini-BAM and deterministic FASTQ samples from locally downloaded source files, while `npm run golden:compare` compares exported results with `samtools idxstats`, `seqkit`, `fastp` and the published Cell Ranger reference within explicit tolerances. The generated source and mini data are intentionally not committed.
+
+The **Export receipt** action writes a compact text handoff containing file provenance, exact versus sampled status, convergence state, assay evidence, health warnings and known limitations. JSON remains the lossless export.
 
 ## FAI
 

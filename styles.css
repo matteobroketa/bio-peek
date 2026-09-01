@@ -81,10 +81,13 @@ h1 { margin: 12px 0 20px; font-size: clamp(42px, 6vw, 70px); line-height: .99; l
 .status { font-size: 11px; font-weight: 700; padding: 6px 9px; border-radius: 999px; white-space: nowrap; }
 .status.good { color: var(--accent); background: var(--accent-2); }
 .status.warn { color: var(--sampled); background: #f8f0e2; }
+.status-strip { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
+.status-strip .status { font-size: 10px; }
 .panel-body { padding: 20px; }
 .callout { border: 1px solid #dce8e1; background: #f7fbf8; border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .callout strong { display: block; font-size: 15px; }
 .callout span { color: var(--muted); font-size: 12px; }
+.callout .evidence-line { display: block; margin-top: 5px; color: var(--inferred); }
 .confidence { font-size: 10px !important; font-weight: 800; letter-spacing: .08em; color: var(--inferred) !important; }
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .metric-card { border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-height: 100px; }
@@ -116,6 +119,13 @@ th { position: sticky; top: 0; background: #f7f9f7; color: var(--muted); font-si
 tr:last-child td { border-bottom: 0; }
 .warning-list { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 7px; }
 .warning-list li { font-size: 11px; color: #7c5d24; background: #fbf6eb; border: 1px solid #f0e2c8; border-radius: 8px; padding: 8px 10px; }
+.health-list { display: grid; gap: 8px; }
+.health-row { display: flex; gap: 8px; align-items: flex-start; font-size: 11px; }
+.health-row .status { padding: 3px 6px; font-size: 10px; }
+.health-row strong, .health-row span { display: block; }
+.health-row strong { font-size: 11px; }
+.health-row span { color: var(--muted); margin-top: 2px; }
+.comparison-card { margin: 14px 0; }
 details { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
 summary { cursor: pointer; font-size: 11px; color: var(--muted); font-weight: 700; }
 pre { overflow: auto; max-height: 260px; padding: 12px; background: #f7f8f7; border-radius: 8px; font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #3c4642; }

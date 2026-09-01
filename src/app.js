@@ -2,6 +2,8 @@ import { renderResults, fileType } from './ui.js';
 import { formatBytes } from './stats.js';
 import { filesFromDataTransfer, hasFileDrag, isSupportedGenomicFile } from './file-ingest.js';
 
+const APP_VERSION = '0.2.0';
+
 const $ = (s) => document.querySelector(s);
 const dropzone = $('#dropzone');
 const fileInput = $('#fileInput');
@@ -199,16 +201,44 @@ analyzeBtn.addEventListener('click', () => {
 });
 
 function bindExport() {
-  const btn = $('#exportJsonBtn');
-  if (!btn) return;
-  btn.addEventListener('click', () => {
-    const json = JSON.stringify(lastResult, (_, v) => typeof v === 'bigint' ? v.toString() : v, 2);
+  const download = (name, body, type) => {
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
-    a.download = `bio-peek-${new Date().toISOString().slice(0, 10)}.json`;
+    a.href = URL.createObjectURL(new Blob([body], { type }));
+    a.download = name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  const btn = $('#exportJsonBtn');
+  if (btn) btn.addEventListener('click', () => {
+    const json = JSON.stringify(lastResult, (_, v) => typeof v === 'bigint' ? v.toString() : v, 2);
+    download(`bio-peek-${new Date().toISOString().slice(0, 10)}.json`, json, 'application/json');
   });
+  const receipt = $('#exportReceiptBtn');
+  if (receipt) receipt.addEventListener('click', () => download(`bio-peek-${new Date().toISOString().slice(0, 10)}-receipt.txt`, formatReceipt(lastResult), 'text/plain'));
+}
+
+function formatReceipt(result) {
+  const lines = [`bio-peek ${APP_VERSION} analysis receipt`, `Generated: ${new Date().toISOString()}`, `Mode: ${result?.mode || 'unknown'}`, 'Scope: local file inspection; no upload', ''];
+  lines.push('Files:');
+  for (const file of result?.files || []) lines.push(`- ${file.name} (${formatBytes(file.size)})`);
+  for (const bam of result?.bam || []) {
+    const mapped = bam.index?.mapped == null ? 'unavailable' : String(bam.index.mapped);
+    const sample = bam.sample;
+    lines.push('', `BAM: ${bam.name}`, `- structural: ${bam.structuralStatus || (bam.eof ? 'pass' : 'review')}; sampling: ${bam.samplingStatus || 'unknown'}`, `- reference: ${bam.header?.referenceFingerprint?.label || bam.header?.referenceBuild?.label || 'unknown'}; EOF: ${bam.eof ? 'present' : 'missing'}`, `- mapped records (BAI metadata): ${mapped}`);
+    if (sample) {
+      lines.push(`- sampled records: ${sample.records}; strategy: ${sample.sampling?.strategy || 'unknown'}; convergence: ${sample.sampling?.converged ? 'stable' : 'still moving'}`, `- sampled MAPQ median: ${sample.mapqMedian ?? 'unavailable'}; read length median: ${sample.readLengthMedian ?? 'unavailable'}`, `- assay: ${sample.assay?.label || 'unknown'}${sample.assay?.chemistry ? `; chemistry: ${sample.assay.chemistry}` : ''}`, `- barcode knee: ${sample.knee ? `~${sample.knee.estimatedCells} (${sample.knee.confidence})` : 'unavailable'}`);
+      for (const flag of sample.healthFlags || []) lines.push(`- health ${flag.level}: ${flag.label} — ${flag.note}`);
+    }
+    for (const warning of bam.warnings || []) lines.push(`- warning: ${warning}`);
+    if (bam.sampleError) lines.push(`- sampling error: ${bam.sampleError}`);
+    if (bam.consistency) lines.push(`- FASTQ↔BAM consistency: ${bam.consistency.status}; ${bam.consistency.limitation}`);
+  }
+  for (const fq of result?.fastq?.files || []) {
+    lines.push('', `FASTQ: ${fq.fileName}`, `- sampling: ${fq.sampling?.strategy || 'unknown'}; reads: ${fq.reads ?? 'unavailable'}; median length: ${fq.medianLength ?? 'unavailable'} bp`, `- Q30: ${fq.q30 == null ? 'unavailable' : `${(fq.q30 * 100).toFixed(1)}%`}; malformed records: ${fq.integrity?.malformedRecords ?? 'unavailable'}; quality: ${fq.integrity?.qualityEncoding || 'unavailable'}`);
+    if (fq.error) lines.push(`- error: ${fq.error}`);
+  }
+  lines.push('', 'Interpretation: sampled estimates are bounded and uncertainty/limitations are retained in the JSON export. This receipt is a human-readable summary, not a replacement for full QC.');
+  return `${lines.join('\n')}\n`;
 }
 
 function demoResult() {
