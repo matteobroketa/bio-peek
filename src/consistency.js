@@ -7,7 +7,7 @@ function role(result) {
   return null;
 }
 
-/** Compare independently sampled FASTQ layout with the BAM's inferred 10x shape. */
+/** Compare independently sampled FASTQ layout with the BAM's inferred 10x layout. */
 export function compareFastqBam(bam, fastqFiles = []) {
   if (!bam?.sample || bam.sample.assay?.label !== 'Single-cell RNA sequencing') return null;
   const r1 = fastqFiles.find((file) => role(file) === 'r1');

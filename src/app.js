@@ -40,7 +40,7 @@ function renderSelection() {
   if (!files.length) return;
   const total = files.reduce((n, f) => n + f.size, 0);
   fileSummary.textContent = `${files.length} file${files.length === 1 ? '' : 's'} · ${formatBytes(total)}`;
-  fileChips.innerHTML = files.map((f) => `<div class="file-chip"><b>${fileType(f.name)}</b><span>${escapeHtml(f.name)}</span><span>${formatBytes(f.size)}</span></div>`).join('');
+  fileChips.innerHTML = files.map((f) => `<div class="file-chip"><b>${fileType(f.name)}</b><span class="file-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span><span>${formatBytes(f.size)}</span></div>`).join('');
 }
 
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -226,8 +226,8 @@ function formatReceipt(result) {
     const sample = bam.sample;
     lines.push('', `BAM: ${bam.name}`, `- structural: ${bam.structuralStatus || (bam.eof ? 'pass' : 'review')}; sampling: ${bam.samplingStatus || 'unknown'}`, `- reference: ${bam.header?.referenceFingerprint?.label || bam.header?.referenceBuild?.label || 'unknown'}; EOF: ${bam.eof ? 'present' : 'missing'}`, `- mapped records (BAI metadata): ${mapped}`);
     if (sample) {
-      lines.push(`- sampled records: ${sample.records}; strategy: ${sample.sampling?.strategy || 'unknown'}; convergence: ${sample.sampling?.converged ? 'stable' : 'still moving'}`, `- sampled MAPQ median: ${sample.mapqMedian ?? 'unavailable'}; read length median: ${sample.readLengthMedian ?? 'unavailable'}`, `- assay: ${sample.assay?.label || 'unknown'}${sample.assay?.chemistry ? `; chemistry: ${sample.assay.chemistry}` : ''}`, `- barcode knee: ${sample.knee ? `~${sample.knee.estimatedCells} (${sample.knee.confidence})` : 'unavailable'}`);
-      for (const flag of sample.healthFlags || []) lines.push(`- health ${flag.level}: ${flag.label} — ${flag.note}`);
+      lines.push(`- sampled records: ${sample.records}; strategy: ${sample.sampling?.strategy || 'unknown'}; convergence: ${sample.sampling?.converged ? 'converged' : 'not converged'}`, `- sampled MAPQ median: ${sample.mapqMedian ?? 'unavailable'}; read length median: ${sample.readLengthMedian ?? 'unavailable'}`, `- assay: ${sample.assay?.label || 'unknown'}${sample.assay?.chemistry ? `; chemistry: ${sample.assay.chemistry}` : ''}`, `- barcode knee: ${sample.knee ? `~${sample.knee.estimatedCells} (${sample.knee.confidence})` : 'unavailable'}`);
+      for (const flag of sample.healthFlags || []) lines.push(`- QC ${flag.level === 'warn' ? 'review' : flag.level}: ${flag.label} — ${flag.note}`);
     }
     for (const warning of bam.warnings || []) lines.push(`- warning: ${warning}`);
     if (bam.sampleError) lines.push(`- sampling error: ${bam.sampleError}`);
@@ -237,7 +237,7 @@ function formatReceipt(result) {
     lines.push('', `FASTQ: ${fq.fileName}`, `- sampling: ${fq.sampling?.strategy || 'unknown'}; reads: ${fq.reads ?? 'unavailable'}; median length: ${fq.medianLength ?? 'unavailable'} bp`, `- Q30: ${fq.q30 == null ? 'unavailable' : `${(fq.q30 * 100).toFixed(1)}%`}; malformed records: ${fq.integrity?.malformedRecords ?? 'unavailable'}; quality: ${fq.integrity?.qualityEncoding || 'unavailable'}`);
     if (fq.error) lines.push(`- error: ${fq.error}`);
   }
-  lines.push('', 'Interpretation: sampled estimates are bounded and uncertainty/limitations are retained in the JSON export. This receipt is a human-readable summary, not a replacement for full QC.');
+  lines.push('', 'Interpretation: sampled estimates are bounded and uncertainty/limitations are retained in the JSON export. Sampled metrics are estimates, not full-file QC.');
   return `${lines.join('\n')}\n`;
 }
 

@@ -1,10 +1,18 @@
 # bio-peek
 
-**Zero-upload genomic preflight inspection for very large sequencing files.**
+[![CI passing](https://github.com/matteobroketa/bio-peek/actions/workflows/ci.yml/badge.svg)](https://github.com/matteobroketa/bio-peek/actions/workflows/ci.yml) [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-live-1d6b50)](https://matteobroketa.github.io/bio-peek/) [![MIT](https://img.shields.io/badge/license-MIT-215c9b)](LICENSE)
 
-bio-peek is a static browser application for quickly understanding the structure and approximate QC shape of BAM/BAI and FASTQ datasets without uploading them and without scanning the full files. It is designed especially for single-cell RNA-seq preflight work.
+Inspect large sequencing files locally in your browser.
 
-## What it does
+bio-peek reads BAM/BAI, FASTQ/FASTQ.GZ, and FASTA `.fai` files without uploading them. It reports exact header/index metrics and QC estimates from sampled records, with additional summaries for scRNA-seq BAMs.
+
+[Open bio-peek](https://matteobroketa.github.io/bio-peek/)
+
+No installation · no server · files remain on your device
+
+![bio-peek PBMC result](assets/bio-peek-preview.png)
+
+## Supported files
 
 ### BAM + BAI
 
@@ -32,7 +40,7 @@ bio-peek is a static browser application for quickly understanding the structure
 
 - Identifies likely single-cell RNA sequencing when barcode + UMI + gene tags support that interpretation.
 - Produces a preliminary barcode-knee estimate and bounded per-barcode reads/UMI/gene/mitochondrial sketches. These are explicitly labeled inferred and are not presented as exact cell calls.
-- Reports a reference fingerprint and heuristic library-health flags for duplication, gene-tag coverage, mitochondrial signal, barcode-knee strength and unusual contigs.
+- Reports a reference summary and heuristic QC checks for duplication, gene-tag coverage, mitochondrial signal, barcode-knee strength and unusual contigs.
 
 ### FASTQ / FASTQ.GZ
 
@@ -55,7 +63,7 @@ FASTQ files do not carry summary indexes. Uncompressed files use distributed byt
 - Parses standard five-column `.fai` indexes.
 - Calculates sequence count, total reference length, N50 and L50 without opening the FASTA.
 
-## Metric semantics
+## How results are classified
 
 Every user-facing metric is classified as one of:
 
@@ -63,7 +71,11 @@ Every user-facing metric is classified as one of:
 - **SAMPLED** — calculated from a bounded subset of actual records.
 - **INFERRED** — an interpretation derived from observed structure and shown with confidence.
 
-This distinction is intentional. bio-peek does not present a 40,000-record estimate as if it were a full QC calculation.
+Sampled metrics report the number of records inspected and are never labeled exact.
+
+## Methods
+
+See [Methods](docs/METHODS.md) for the parsing, sampling and convergence model.
 
 ## Privacy and performance model
 
@@ -73,9 +85,9 @@ For BAMs, BGZF block sizes are parsed from the `BC` extra field and individual g
 
 For uncompressed FASTQ, bounded byte ranges are sampled across the file. Ordinary gzip FASTQ is explicitly reported as a prefix stream sample because gzip has no random-access index. Four-line structure, printable quality bytes, base alphabet and read-number headers are validated and reported.
 
-Deep BAM mode samples progressively in batches. It records checkpoint metrics and stops early only after the key medians and proportions stabilize; otherwise the result is labeled as still moving at the sample limit. Sampled proportions include a 95% binomial uncertainty margin and report represented index regions/reference strata.
+Deep BAM mode samples progressively in batches. It records checkpoint metrics and stops early only after the key medians and proportions converge; otherwise the result is labeled not converged at the sample limit. Sampled proportions include a 95% binomial uncertainty margin and report represented index regions/reference strata.
 
-The BAM sampler maintains bounded per-barcode sketches for reads, UMIs, genes and mitochondrial observations. These are sample-derived data-shape metrics, not Cell Ranger cell calls.
+The BAM sampler maintains bounded per-barcode sketches for reads, UMIs, genes and mitochondrial observations. These are sampled barcode metrics, not Cell Ranger cell calls.
 
 ## Run locally
 
@@ -110,15 +122,19 @@ The reproducible PBMC v3 golden recipe is available under `tests/golden/pbmc-v3`
 
 ## Important limitations
 
-- BAI metadata counts are optional. When pseudo-bin `37450` is absent, exact mapped/unmapped counts are not fabricated.
+- BAI metadata counts are optional. When pseudo-bin `37450` is absent, mapped/unmapped counts are reported as unavailable.
 - Distributed BAM sampling is not an exact whole-file statistic. Coordinate sorting, unusual index layouts or highly nonuniform record sizes can influence the sample.
 - Selected BAM, BAI and FASTQ files are resolved into independent dataset groups. Files with unrelated or ambiguous names are surfaced as unassigned instead of being silently combined.
-- The barcode-knee estimate is exploratory. Exact cell calling requires the appropriate single-cell pipeline and full molecule/count matrix context.
-- The FASTQ parser targets conventional four-line sequencing FASTQ records, which covers standard Illumina/10x exports. Exotic wrapped FASTQ is intentionally not supported in this first release.
+- The barcode-knee estimate is not a cell-calling method. Exact cell calling requires the appropriate single-cell pipeline and full molecule/count matrix context.
+- The FASTQ parser targets conventional four-line sequencing FASTQ records, which covers standard Illumina/10x exports. Wrapped FASTQ is not supported.
 - `quickcheck`-style EOF/header checks cannot detect corruption in the middle of a BAM.
 - CRAM/CRAI is not implemented. CRAI should not be treated as a BAI-equivalent source of idxstats counts.
 - Browser `DecompressionStream('gzip')` is required for BAM/BGZF and `.fastq.gz` inspection.
 - Deep-mode convergence is a bounded stability diagnostic, not a proof that a sample is representative of every biological subpopulation.
+
+## Development
+
+The application is plain HTML, CSS and JavaScript with no build step. Run `npm test` and `npm run check` before opening a pull request; the browser gate runs Chromium, Firefox, WebKit and iOS WebKit coverage in CI.
 
 ## Source specifications
 

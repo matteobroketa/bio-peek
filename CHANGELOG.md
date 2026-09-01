@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 — 2026-09-01
+
+- Added local-first hero copy, metadata and favicon for the browser application.
+- Clarified EXACT, SAMPLED and INFERRED result language and replaced ambiguous shape/health terminology with assay summaries and QC checks.
+- Added barcode-knee marker, readable result typography, flatter analytical sections and long-filename truncation with full-name tooltips.
+- Added the PBMC result screenshot, concise README opening and future-work handoff.
+- Made Pages deployment run the complete cross-browser CI gate.
+
 ## 0.1.1
 
 - Reworked local file selection for Firefox/Windows compatibility.
@@ -13,7 +21,7 @@
 
 ## 0.1.0 — 2026-08-31
 
-- Initial zero-upload browser release.
+- Initial local browser release.
 - BAM header and canonical EOF parsing.
 - Direct BAI parser with metadata pseudo-bin counts.
 - Distributed BAI-guided BAM record sampling.
